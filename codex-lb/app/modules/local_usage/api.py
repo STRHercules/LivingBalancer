@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import time
+from functools import lru_cache
+from threading import Lock
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -13,6 +16,10 @@ router = APIRouter(
     tags=["dashboard"],
     dependencies=[Depends(validate_dashboard_session), Depends(set_dashboard_error_format)],
 )
+
+_activity_lock = Lock()
+_usage_lock = Lock()
+_sessions_lock = Lock()
 
 
 class QuotaConsent(BaseModel):
@@ -38,11 +45,22 @@ def start_quota_polling() -> None:
 @router.get("/activity")
 async def activity(limit: int = Query(default=16, ge=1, le=50)) -> dict[str, Any]:
     try:
-        from app.modules.local_usage.activity import recent_activity
-
-        return await run_in_threadpool(recent_activity, limit)
+        return await run_in_threadpool(_cached_activity, limit, int(time.monotonic() // 2))
     except Exception as exc:
         raise _collector_error(exc) from exc
+
+
+def _cached_activity(limit: int, second: int) -> dict[str, Any]:
+    """Coalesce identical real-time reads from multiple open dashboards."""
+    with _activity_lock:
+        return _activity_snapshot(limit, second)
+
+
+@lru_cache(maxsize=128)
+def _activity_snapshot(limit: int, second: int) -> dict[str, Any]:
+    from app.modules.local_usage.activity import recent_activity
+
+    return recent_activity(limit)
 
 
 def _collector_error(exc: Exception) -> HTTPException:
@@ -53,6 +71,30 @@ def _collector_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail=str(exc))
 
 
+def _cached_usage(period: str, date_from: str | None, date_to: str | None, minute: int) -> dict[str, Any]:
+    with _usage_lock:
+        return _usage_snapshot(period, date_from, date_to, minute)
+
+
+@lru_cache(maxsize=32)
+def _usage_snapshot(period: str, date_from: str | None, date_to: str | None, minute: int) -> dict[str, Any]:
+    from tokdash.compute import compute_usage_with_comparison
+
+    return compute_usage_with_comparison(period, date_from, date_to)
+
+
+def _cached_sessions(tool: str, period: str, date_from: str | None, date_to: str | None, include_review_sessions: bool | None, minute: int) -> dict[str, Any]:
+    with _sessions_lock:
+        return _sessions_snapshot(tool, period, date_from, date_to, include_review_sessions, minute)
+
+
+@lru_cache(maxsize=64)
+def _sessions_snapshot(tool: str, period: str, date_from: str | None, date_to: str | None, include_review_sessions: bool | None, minute: int) -> dict[str, Any]:
+    from tokdash.sessions import get_sessions_data
+
+    return get_sessions_data(tool, period, date_from, date_to, include_review_sessions=include_review_sessions)
+
+
 @router.get("/usage")
 async def usage(
     period: str = "today",
@@ -60,9 +102,7 @@ async def usage(
     date_to: str | None = None,
 ) -> dict[str, Any]:
     try:
-        from tokdash.compute import compute_usage_with_comparison
-
-        return await run_in_threadpool(compute_usage_with_comparison, period, date_from, date_to)
+        return await run_in_threadpool(_cached_usage, period, date_from, date_to, int(time.monotonic() // 60))
     except Exception as exc:
         raise _collector_error(exc) from exc
 
@@ -96,15 +136,14 @@ async def sessions(
     include_review_sessions: bool | None = None,
 ) -> dict[str, Any]:
     try:
-        from tokdash.sessions import get_sessions_data
-
         return await run_in_threadpool(
-            get_sessions_data,
+            _cached_sessions,
             tool,
             period,
             date_from,
             date_to,
-            include_review_sessions=include_review_sessions,
+            include_review_sessions,
+            int(time.monotonic() // 60),
         )
     except Exception as exc:
         raise _collector_error(exc) from exc

@@ -6,10 +6,10 @@ CodexLB with the existing dashboard and controls intact, plus the living Codex d
 docker compose -f docker-compose.living.yml up --build
 ```
 
-- Living dashboard: <http://localhost:5174/dashboard>
-- Local usage: <http://localhost:5174/local-usage>
-- Living CodexLB API/production dashboard: <http://localhost:2456>
-- Stock CodexLB remains on <http://localhost:2455>
+- Living dashboard: <http://localhost:5173/dashboard>
+- Local usage: <http://localhost:5173/local-usage>
+- CodexLivingBalancer API/production dashboard: <http://localhost:2455>
+- Codex OAuth callback: <http://localhost:1455/auth/callback>
 
 TokDash's collectors run inside CodexLB; there is no TokDash server or second dashboard. CodexLB exposes the merged token/cache/cost totals, coding-tool and model breakdowns, session explorer, contribution calendar, energy estimate, and provider quota views under `/local-usage`. The same data remains available to local statusline/report integrations under `/api/local-usage`.
 

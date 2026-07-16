@@ -37,6 +37,7 @@ const TASKS: Record<TaskKey, TaskConfig> = {
 
 const TASK_FOR_ACTIVITY: Record<ActivityKind, TaskKey> = { idle: "write", thinking: "think", workflow: "verify", tool: "tool", search: "search" };
 const TASK_BUTTONS: Record<TaskKey, [string, string]> = { think: ["Think", "reason"], search: ["Search", "retrieve"], tool: ["Use tool", "execute"], write: ["Write", "synthesize"], verify: ["Verify", "inspect"] };
+const SHOW_SIMULATOR_CONTROLS = false;
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const lerp = (from: number, to: number, amount: number) => from + (to - from) * amount;
 const random = (min: number, max: number) => min + Math.random() * (max - min);
@@ -114,9 +115,11 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     let lastEventId: string | undefined;
     let packetTotal = 0;
     let progress = 0;
-    let auto = true;
+    let auto = false;
     let autoAt = performance.now() + 1800;
     let lastFrame = performance.now();
+    let lastDraw = 0;
+    let isVisible = true;
     let frame = 0;
 
     const makeGlobe = () => {
@@ -443,6 +446,9 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     };
 
     const draw = (time: number) => {
+      frame = requestAnimationFrame(draw);
+      if (!isVisible || document.hidden || time - lastDraw < 1000 / 30) return;
+      lastDraw = time;
       const signal = signalRef.current;
       if (signal.eventId && signal.eventId !== lastEventId) {
         startTask(TASK_FOR_ACTIVITY[signal.activityKind], signal.eventLabel);
@@ -460,7 +466,6 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         const keys = Object.keys(TASKS) as TaskKey[];
         startTask(keys[Math.floor(Math.random() * keys.length)]);
       }
-      frame = requestAnimationFrame(draw);
     };
 
     const move = (event: PointerEvent) => {
@@ -474,7 +479,9 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     const clear = () => { knowledge.length = 0; packets.length = 0; pulses.length = 0; packetTotal = 0; if (knowledgeRef.current) knowledgeRef.current.textContent = "0"; if (packetRef.current) packetRef.current.textContent = "0"; };
 
     const observer = new ResizeObserver(resize);
+    const visibilityObserver = new IntersectionObserver(([entry]) => { isVisible = entry.isIntersecting; });
     observer.observe(stage);
+    visibilityObserver.observe(stage);
     stage.addEventListener("pointermove", move);
     stage.addEventListener("pointerleave", leave);
     stage.addEventListener("living-task", runManual);
@@ -488,14 +495,14 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     if (knowledgeRef.current) knowledgeRef.current.textContent = String(knowledge.length);
     frame = requestAnimationFrame(draw);
     return () => {
-      cancelAnimationFrame(frame); observer.disconnect(); stage.removeEventListener("pointermove", move); stage.removeEventListener("pointerleave", leave); stage.removeEventListener("living-task", runManual); stage.removeEventListener("living-auto", toggleAuto); stage.removeEventListener("living-clear", clear);
+      cancelAnimationFrame(frame); observer.disconnect(); visibilityObserver.disconnect(); stage.removeEventListener("pointermove", move); stage.removeEventListener("pointerleave", leave); stage.removeEventListener("living-task", runManual); stage.removeEventListener("living-auto", toggleAuto); stage.removeEventListener("living-clear", clear);
     };
   }, []);
 
   const dispatch = (name: string, detail?: TaskKey) => stageRef.current?.dispatchEvent(new CustomEvent(name, { detail }));
 
   return (
-    <div ref={stageRef} className="living-globe-runtime">
+    <div ref={stageRef} className={`living-globe-runtime${SHOW_SIMULATOR_CONTROLS ? " has-controls" : ""}`}>
       <canvas ref={canvasRef} className="living-globe-canvas" aria-label="Animated Codex knowledge globe" />
       <div className="living-globe-scan" />
       <aside className="living-globe-hud living-globe-hud-left">
@@ -511,10 +518,10 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       <div className="living-globe-caption" aria-live="polite"><strong ref={eyebrowRef}>Codex core online</strong><span ref={titleRef}>A living map of accumulated knowledge</span><small ref={detailRef}>Live Codex activity will animate the globe</small></div>
       <div className="living-globe-legend"><span><i style={{ "--legend": "#37d7ff" } as React.CSSProperties} />knowledge</span><span><i style={{ "--legend": "#ffac5c" } as React.CSSProperties} />reasoning</span><span><i style={{ "--legend": "#52f6ad" } as React.CSSProperties} />tools</span><span><i style={{ "--legend": "#b080ff" } as React.CSSProperties} />search</span></div>
       <div ref={progressRef} className="living-globe-progress" />
-      <nav className="living-globe-controls" aria-label="Codex process simulator">
+      {SHOW_SIMULATOR_CONTROLS ? <nav className="living-globe-controls" aria-label="Codex process simulator">
         <div>{(Object.keys(TASKS) as TaskKey[]).map((taskKey) => <button key={taskKey} type="button" style={{ "--accent": TASKS[taskKey].color } as React.CSSProperties} onClick={() => dispatch("living-task", taskKey)}><strong>{TASK_BUTTONS[taskKey][0]}</strong><small>{TASK_BUTTONS[taskKey][1]}</small></button>)}</div>
         <div><button ref={autoRef} type="button" aria-label="Toggle automatic simulation" aria-pressed="true" onClick={() => dispatch("living-auto")}>∞</button><button type="button" aria-label="Clear knowledge satellites" onClick={() => dispatch("living-clear")}>×</button></div>
-      </nav>
+      </nav> : null}
       <div ref={labelRef} className="living-globe-satellite-label"><strong ref={labelTypeRef}>task</strong><small ref={labelNameRef}>working…</small></div>
       <div className="living-globe-grain" />
     </div>

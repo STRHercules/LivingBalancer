@@ -46,13 +46,13 @@
   height: 620px;
   overflow: hidden;
   isolation: isolate;
-  background: radial-gradient(circle at 50% 52%, rgba(13,116,255,.17), transparent 31%), linear-gradient(180deg, #020b15, #03111f 58%, #020a12);
+  background: var(--card);
 }
 .living-globe-scene::before {
   position: absolute;
   z-index: 0;
   inset: 0;
-  background-image: linear-gradient(rgba(43,132,204,.07) 1px, transparent 1px), linear-gradient(90deg, rgba(43,132,204,.06) 1px, transparent 1px);
+  background-image: linear-gradient(color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px);
   background-size: 28px 28px;
   content: "";
   mask-image: radial-gradient(circle at center, #000 8%, rgba(0,0,0,.8) 44%, transparent 87%);
@@ -74,14 +74,17 @@
 .living-globe-hud span { color: rgba(218,237,248,.92); font-family: "JetBrains Mono", monospace; font-size: 10px; }
 .living-globe-hud small { margin-top: 7px; color: rgba(111,145,166,.62); font-family: "JetBrains Mono", monospace; font-size: 8px; letter-spacing: .04em; }
 .living-globe-hud i { font-style: normal; }
-.living-globe-caption { position: absolute; z-index: 12; bottom: 112px; left: 50%; display: grid; width: min(420px, 45%); justify-items: center; transform: translateX(-50%); pointer-events: none; }
+.living-globe-caption { position: absolute; z-index: 12; bottom: 42px; left: 50%; display: grid; width: min(420px, 45%); justify-items: center; transform: translateX(-50%); pointer-events: none; }
 .living-globe-caption strong { color: rgba(91,214,255,.76); font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: .2em; text-transform: uppercase; text-shadow: 0 0 12px rgba(55,215,255,.6); }
 .living-globe-caption span { margin-top: 7px; color: #e7f8ff; font-size: clamp(14px, 1.45vw, 20px); font-weight: 650; text-align: center; text-shadow: 0 0 24px rgba(55,215,255,.25); }
 .living-globe-caption small { margin-top: 6px; color: rgba(124,159,180,.8); font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: .05em; text-align: center; }
-.living-globe-legend { position: absolute; z-index: 10; right: 22px; bottom: 102px; display: flex; gap: 14px; color: rgba(116,150,170,.72); font-family: "JetBrains Mono", monospace; font-size: 8px; letter-spacing: .04em; text-transform: uppercase; }
+.living-globe-legend { position: absolute; z-index: 10; right: 22px; bottom: 32px; display: flex; gap: 14px; color: rgba(116,150,170,.72); font-family: "JetBrains Mono", monospace; font-size: 8px; letter-spacing: .04em; text-transform: uppercase; }
 .living-globe-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .living-globe-legend i { width: 5px; height: 5px; border-radius: 50%; background: var(--legend); box-shadow: 0 0 8px var(--legend); }
-.living-globe-progress { position: absolute; z-index: 12; right: 18px; bottom: 91px; left: 18px; height: 1px; overflow: hidden; background: rgba(87,157,198,.12); }
+.living-globe-progress { position: absolute; z-index: 12; right: 18px; bottom: 21px; left: 18px; height: 1px; overflow: hidden; background: rgba(87,157,198,.12); }
+.living-globe-runtime.has-controls .living-globe-caption { bottom: 112px; }
+.living-globe-runtime.has-controls .living-globe-legend { bottom: 102px; }
+.living-globe-runtime.has-controls .living-globe-progress { bottom: 91px; }
 .living-globe-progress::after { display: block; width: var(--progress, 0%); height: 100%; background: linear-gradient(90deg, transparent, var(--active-color, #37d7ff)); box-shadow: 0 0 12px var(--active-color, #37d7ff); content: ""; transition: width .2s linear; }
 .living-globe-controls { position: absolute; z-index: 15; bottom: 18px; left: 50%; display: grid; width: min(760px, calc(100% - 36px)); grid-template-columns: 1fr auto; gap: 10px; padding: 10px; transform: translateX(-50%); border: 1px solid rgba(77,157,202,.24); border-radius: 11px; background: rgba(3,10,17,.8); backdrop-filter: blur(18px); }
 .living-globe-controls > div { display: flex; gap: 7px; }

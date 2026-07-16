@@ -154,7 +154,7 @@ export function OauthDialog({
   onManualCallback,
   onReset,
 }: OauthDialogProps) {
-  const [selectedMethod, setSelectedMethod] = useState<"browser" | "device">("browser");
+  const [selectedMethod, setSelectedMethod] = useState<"browser" | "device">("device");
   const stage = getStage(state);
   const browserRefreshInProgress = stage === "browser" && state.status === "starting";
 
@@ -162,7 +162,7 @@ export function OauthDialog({
     onOpenChange(next);
     if (!next) {
       onReset();
-      setSelectedMethod("browser");
+      setSelectedMethod("device");
     }
   };
 
@@ -205,7 +205,7 @@ export function OauthDialog({
             >
               <p className="text-sm font-medium">Browser (PKCE)</p>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                Opens a browser window for sign-in. Recommended for most users.
+                Requires exclusive access to localhost port 1455.
               </p>
             </button>
             <button
@@ -220,7 +220,7 @@ export function OauthDialog({
             >
               <p className="text-sm font-medium">Device code</p>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                Use a code on another device. Useful for headless environments.
+                Recommended while stock CodexLB is running beside this instance.
               </p>
             </button>
           </div>

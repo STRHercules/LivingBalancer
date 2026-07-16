@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import json
-from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+_RELEVANT_EVENT_MARKERS = (
+    b'"agent_reasoning"',
+    b'"reasoning"',
+    b'"task_started"',
+    b'"task_complete"',
+    b'"patch_apply_end"',
+    b'"custom_tool_call"',
+)
 
 
 def _classify(row_type: str, payload: dict[str, Any]) -> tuple[str, str] | None:
@@ -46,19 +54,32 @@ def _latest_rollout() -> Path | None:
     return max(candidates, key=lambda path: path.stat().st_mtime, default=None)
 
 
+def _tail_lines(path: Path, limit: int) -> list[bytes]:
+    with path.open("rb") as source:
+        source.seek(0, 2)
+        position = source.tell()
+        buffer = b""
+        while position > 0 and buffer.count(b"\n") <= limit:
+            size = min(64 * 1024, position)
+            position -= size
+            source.seek(position)
+            buffer = source.read(size) + buffer
+    return buffer.splitlines()[-limit:]
+
+
 def recent_activity(limit: int = 16) -> dict[str, Any]:
     path = _latest_rollout()
     if path is None:
         return {"session_id": None, "state": "idle", "events": []}
 
-    with path.open("r", encoding="utf-8") as source:
-        lines = deque(source, maxlen=240)
-
     events: list[dict[str, Any]] = []
-    for index, line in enumerate(lines):
+    for index, line in enumerate(_tail_lines(path, max(64, limit * 4))):
+        # Tool results can be megabytes; reject irrelevant rows before JSON decoding.
+        if not any(marker in line for marker in _RELEVANT_EVENT_MARKERS):
+            continue
         try:
             row = json.loads(line)
-        except json.JSONDecodeError:
+        except (UnicodeDecodeError, json.JSONDecodeError):
             continue
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
         classified = _classify(str(row.get("type") or ""), payload)
@@ -78,5 +99,11 @@ def recent_activity(limit: int = 16) -> dict[str, Any]:
 
 
 if __name__ == "__main__":
+    import tempfile
+
     assert _classify("event_msg", {"type": "agent_reasoning"}) == ("thinking", "Analyzing the current task")
     assert _classify("response_item", {"type": "custom_tool_call", "input": "search_query"}) == ("search", "Searching the web")
+    with tempfile.TemporaryDirectory() as directory:
+        sample = Path(directory) / "events.jsonl"
+        sample.write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
+        assert _tail_lines(sample, 2) == [b"three", b"four"]
