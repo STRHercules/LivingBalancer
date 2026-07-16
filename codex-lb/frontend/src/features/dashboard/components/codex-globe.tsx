@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { generateUniqueSatelliteNameMetadata, hashTaskSeed, type SatelliteNameMetadata, type SatelliteType } from "../satellite-naming";
 
 type ActivityKind = "idle" | "thinking" | "workflow" | "tool" | "search";
 type TaskKey = "think" | "search" | "tool" | "write" | "verify";
@@ -8,10 +9,11 @@ type GlobePoint = Point3D & { size: number; alpha: number; warm: boolean; phase:
 type RenderedGlobePoint = { source: GlobePoint; x: number; y: number; z: number; perspective: number };
 type Dust = Point3D & { size: number; alpha: number };
 type Satellite = {
-  id: number;
+  id: string;
   taskKey: TaskKey;
-  label: string;
+  naming: SatelliteNameMetadata;
   color: string;
+  createdAtIso: string;
   createdAt: number;
   angle: number;
   incline: number;
@@ -26,8 +28,9 @@ type Packet = { source: Point3D; color: string; startedAt: number; duration: num
 type Pulse = { x: number; y: number; color: string; startedAt: number; duration: number };
 type TaskConfig = { label: string; title: string; detail: string; color: string; duration: number; packets: number };
 type ActiveTask = { key: TaskKey; config: TaskConfig; startedAt: number; duration: number; nextPacketAt: number };
-type QueuedTask = { taskKey: TaskKey; label?: string };
-export type SatelliteSummary = { id: number; label: string; type: string; color: string };
+type QueuedTask = { taskKey: TaskKey; label?: string; taskSeed?: string };
+type StoredSatellite = Pick<Satellite, "id" | "taskKey" | "naming" | "color" | "createdAtIso">;
+export type SatelliteSummary = { id: string; label: string; type: string; color: string };
 
 const TASKS: Record<TaskKey, TaskConfig> = {
   think: { label: "Reasoning", title: "Mapping possible solutions", detail: "Evaluating branches, constraints, and likely outcomes", color: "#ffac5c", duration: 4200, packets: 16 },
@@ -38,7 +41,9 @@ const TASKS: Record<TaskKey, TaskConfig> = {
 };
 
 const TASK_FOR_ACTIVITY: Record<ActivityKind, TaskKey> = { idle: "write", thinking: "think", workflow: "verify", tool: "tool", search: "search" };
+const SATELLITE_TYPE_FOR_TASK: Record<TaskKey, SatelliteType> = { think: "thinking", search: "search", tool: "tools", write: "communication", verify: "verification" };
 const TASK_BUTTONS: Record<TaskKey, [string, string]> = { think: ["Think", "reason"], search: ["Search", "retrieve"], tool: ["Use tool", "execute"], write: ["Write", "synthesize"], verify: ["Verify", "inspect"] };
+const SATELLITE_STORAGE_KEY = "codex-lb-living-satellites-v1";
 const SHOW_SIMULATOR_CONTROLS = false;
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const lerp = (from: number, to: number, amount: number) => from + (to - from) * amount;
@@ -53,6 +58,26 @@ function rgba(hex: string, alpha: number) {
 function seededNoise(value: number) {
   const noise = Math.sin(value * 12.9898 + 78.233) * 43758.5453;
   return noise - Math.floor(noise);
+}
+
+function loadStoredSatellites(): StoredSatellite[] | null {
+  try {
+    const stored = window.localStorage.getItem(SATELLITE_STORAGE_KEY);
+    if (stored === null) return null;
+    const value: unknown = JSON.parse(stored);
+    if (!Array.isArray(value)) return [];
+    const names = new Set<string>();
+    return value.filter((satellite): satellite is StoredSatellite => {
+      if (!satellite || typeof satellite !== "object") return false;
+      const record = satellite as Partial<StoredSatellite>;
+      const name = record.naming?.displayName;
+      if (typeof record.id !== "string" || !(record.taskKey && record.taskKey in TASKS) || typeof record.color !== "string" || typeof record.createdAtIso !== "string" || typeof name !== "string" || name.length < 4 || name.length > 40 || names.has(name)) return false;
+      names.add(name);
+      return true;
+    });
+  } catch {
+    return null;
+  }
 }
 
 export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", eventLabel, model = "Waiting for traffic", context = "living-codex / globe", onSatellitesChange }: {
@@ -102,6 +127,10 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     const packets: Packet[] = [];
     const pulses: Pulse[] = [];
     const queue: QueuedTask[] = [];
+    const assignedNames = new Set<string>();
+    const storedState = loadStoredSatellites();
+    const storedSatellites = storedState ?? [];
+    let nextCreationIndex = Math.max(0, ...storedSatellites.map((satellite) => satellite.naming.index || 0)) + 1;
     let width = 1;
     let height = 1;
     let radius = 180;
@@ -129,7 +158,14 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     let isVisible = true;
     let frame = 0;
 
-    const syncSatellites = () => onSatellitesChange?.(knowledge.map((satellite) => ({ id: satellite.id, label: satellite.label, type: TASKS[satellite.taskKey].label, color: satellite.color })));
+    const syncSatellites = () => onSatellitesChange?.(knowledge.map((satellite) => ({ id: satellite.id, label: satellite.naming.displayName, type: TASKS[satellite.taskKey].label, color: satellite.color })));
+    const persistSatellites = () => {
+      try {
+        window.localStorage.setItem(SATELLITE_STORAGE_KEY, JSON.stringify(knowledge.map(({ id, taskKey, naming, color, createdAtIso }) => ({ id, taskKey, naming, color, createdAtIso }))));
+      } catch {
+        // Storage may be unavailable in private or policy-restricted browser contexts.
+      }
+    };
 
     const makeGlobe = () => {
       globePoints.length = 0;
@@ -192,9 +228,29 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       return { x: centerX + point.x * radius * scale * perspective, y: centerY + point.y * radius * scale * perspective, z: point.z, perspective };
     };
 
-    const makeSatellite = (taskKey: TaskKey, label: string, color: string, active = true): Satellite => ({
-      id: Date.now() + Math.random(), taskKey, label, color, createdAt: performance.now(), angle: random(0, Math.PI * 2), incline: random(-0.72, 0.72), precession: random(-1.2, 1.2), speed: random(0.16, 0.3) * (Math.random() > 0.5 ? 1 : -1), phase: random(0, Math.PI * 2), orbit: active ? random(1.22, 1.42) : 1.18 + knowledge.length % 5 * 0.045,
-    });
+    const makeSatellite = (taskKey: TaskKey, taskSeed: string, color: string, active = true, stored?: StoredSatellite): Satellite => {
+      const naming = stored?.naming ?? generateUniqueSatelliteNameMetadata({
+        type: SATELLITE_TYPE_FOR_TASK[taskKey],
+        index: nextCreationIndex++,
+        taskSeed: hashTaskSeed(taskSeed),
+        generation: 1,
+      }, assignedNames);
+      assignedNames.add(naming.displayName);
+      return {
+        id: stored?.id ?? `sat_${String(naming.index).padStart(6, "0")}`,
+        taskKey,
+        naming,
+        color,
+        createdAtIso: stored?.createdAtIso ?? new Date().toISOString(),
+        createdAt: performance.now(),
+        angle: random(0, Math.PI * 2),
+        incline: random(-0.72, 0.72),
+        precession: random(-1.2, 1.2),
+        speed: random(0.16, 0.3) * (Math.random() > 0.5 ? 1 : -1),
+        phase: random(0, Math.PI * 2),
+        orbit: active ? random(1.22, 1.42) : 1.18 + knowledge.length % 5 * 0.045,
+      };
+    };
 
     const satellitePosition = (satellite: Satellite, time: number) => {
       const age = (time - satellite.createdAt) * 0.001;
@@ -232,16 +288,16 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       progressRef.current?.style.setProperty("--active-color", config.color);
     };
 
-    const startTask = (taskKey: TaskKey, label?: string) => {
+    const startTask = (taskKey: TaskKey, label?: string, taskSeed = `${taskKey}-${nextCreationIndex}`) => {
       if (activeTask) {
-        queue.push({ taskKey, label });
+        queue.push({ taskKey, label, taskSeed });
         if (queue.length > 24) queue.shift();
         syncQueue();
         return;
       }
       const config = { ...TASKS[taskKey], ...(label ? { title: label } : {}) };
       activeTask = { key: taskKey, config, startedAt: performance.now(), duration: reducedMotion ? Math.max(2100, config.duration * 0.7) : config.duration, nextPacketAt: performance.now() };
-      activeSatellite = makeSatellite(taskKey, config.title, config.color);
+      activeSatellite = makeSatellite(taskKey, taskSeed, config.color);
       progress = 0;
       updateTaskUI(taskKey, config);
       for (let index = 0; index < 4; index += 1) emitPacket(config.color, index * 110);
@@ -249,14 +305,14 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
 
     const finishTask = () => {
       if (!activeTask || !activeSatellite) return;
-      const finishedTitle = activeTask.config.title;
       knowledge.push({ ...activeSatellite, createdAt: performance.now() - random(2000, 7000), orbit: 1.17 + knowledge.length % 6 * 0.038, speed: random(0.035, 0.085) * (Math.random() > 0.5 ? 1 : -1) });
       if (knowledge.length > 84) knowledge.shift();
+      persistSatellites();
       syncSatellites();
       if (knowledgeRef.current) knowledgeRef.current.textContent = String(knowledge.length);
       if (activityValueRef.current) activityValueRef.current.textContent = "Task completed";
       if (eyebrowRef.current) eyebrowRef.current.textContent = "Knowledge integrated";
-      if (titleRef.current) titleRef.current.textContent = finishedTitle;
+      if (titleRef.current) titleRef.current.textContent = activeSatellite.naming.displayName;
       if (detailRef.current) detailRef.current.textContent = "A new satellite has joined the Codex knowledge lattice";
       if (statusRef.current) statusRef.current.textContent = "standing by";
       if (workflowRef.current) workflowRef.current.textContent = "idle";
@@ -267,7 +323,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       if (queue.length) {
         const next = queue.shift()!;
         syncQueue();
-        window.setTimeout(() => startTask(next.taskKey, next.label), 500);
+        window.setTimeout(() => startTask(next.taskKey, next.label, next.taskSeed), 500);
       } else if (auto) {
         autoAt = performance.now() + random(900, 2100);
       }
@@ -429,8 +485,8 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       const label = labelRef.current;
       if (!label) return;
       label.style.left = `${point.x}px`; label.style.top = `${point.y - 36}px`; label.style.setProperty("--sat-color", satellite.color); label.classList.add("visible");
-      if (labelTypeRef.current) labelTypeRef.current.textContent = TASKS[satellite.taskKey].label;
-      if (labelNameRef.current) labelNameRef.current.textContent = satellite.label.toLowerCase();
+      if (labelTypeRef.current) labelTypeRef.current.textContent = `${TASKS[satellite.taskKey].label} satellite`;
+      if (labelNameRef.current) labelNameRef.current.textContent = satellite.naming.displayName;
     };
 
     const drawActiveSatellite = (time: number) => {
@@ -509,7 +565,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       if (!isVisible || document.hidden) return;
       const signal = signalRef.current;
       if (signal.eventId && signal.eventId !== lastEventId) {
-        startTask(TASK_FOR_ACTIVITY[signal.activityKind], signal.eventLabel);
+        startTask(TASK_FOR_ACTIVITY[signal.activityKind], signal.eventLabel, signal.eventId);
         lastEventId = signal.eventId;
       }
       const delta = Math.min(40, time - lastFrame); lastFrame = time;
@@ -526,7 +582,8 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       updateTask(time);
       if (auto && !activeTask && !queue.length && time >= autoAt) {
         const keys = Object.keys(TASKS) as TaskKey[];
-        startTask(keys[Math.floor(Math.random() * keys.length)]);
+        const taskKey = keys[Math.floor(Math.random() * keys.length)];
+        startTask(taskKey, undefined, `auto-${taskKey}-${nextCreationIndex}`);
       }
     };
 
@@ -538,7 +595,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     const leave = () => { targetPointerX = 0; targetPointerY = 0; hoverX = -1000; hoverY = -1000; };
     const runManual = (event: Event) => { const taskKey = (event as CustomEvent<TaskKey>).detail; startTask(taskKey); };
     const toggleAuto = () => { auto = !auto; autoRef.current?.setAttribute("aria-pressed", String(auto)); if (auto && !activeTask) autoAt = performance.now() + 700; };
-    const clear = () => { knowledge.length = 0; packets.length = 0; pulses.length = 0; packetTotal = 0; syncSatellites(); if (knowledgeRef.current) knowledgeRef.current.textContent = "0"; if (packetRef.current) packetRef.current.textContent = "0"; };
+    const clear = () => { knowledge.length = 0; assignedNames.clear(); packets.length = 0; pulses.length = 0; packetTotal = 0; persistSatellites(); syncSatellites(); if (knowledgeRef.current) knowledgeRef.current.textContent = "0"; if (packetRef.current) packetRef.current.textContent = "0"; };
 
     const observer = new ResizeObserver(resize);
     const visibilityObserver = new IntersectionObserver(([entry]) => { isVisible = entry.isIntersecting; });
@@ -551,10 +608,14 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     stage.addEventListener("living-clear", clear);
     window.addEventListener("resize", resize);
     resize();
-    (["think", "search", "tool", "write", "verify", "search", "think", "tool"] as TaskKey[]).forEach((taskKey, index) => {
-      const satellite = makeSatellite(taskKey, TASKS[taskKey].title, TASKS[taskKey].color, false);
+    const initialSatellites = storedState ? storedSatellites : (["think", "search", "tool", "write", "verify", "search", "think", "tool"] as TaskKey[]).map((taskKey, index) => ({ taskKey, index }));
+    initialSatellites.forEach((entry, index) => {
+      const taskKey = entry.taskKey;
+      const stored = "naming" in entry ? entry : undefined;
+      const satellite = makeSatellite(taskKey, `bootstrap-${index + 1}`, stored?.color ?? TASKS[taskKey].color, false, stored);
       satellite.createdAt -= index * 830; satellite.angle += index * 0.74; knowledge.push(satellite);
     });
+    if (!storedState) persistSatellites();
     syncSatellites();
     if (knowledgeRef.current) knowledgeRef.current.textContent = String(knowledge.length);
     frame = requestAnimationFrame(draw);
