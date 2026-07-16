@@ -7,12 +7,13 @@ import {
   buildDepletionView,
   buildRemainingItems,
   buildWeeklyCreditPace,
+  formatRequestSuccessRate,
   sumRemaining,
   weeklyCreditPaceStatus,
   type RemainingItem,
   type WeeklyCreditPace,
 } from "@/features/dashboard/utils";
-import { createDashboardOverview, createDefaultRequestLogs } from "@/test/mocks/factories";
+import { createDashboardOverview, createDefaultRequestLogs, createRequestLogEntry } from "@/test/mocks/factories";
 import { formatCompactAccountId } from "@/utils/account-identifiers";
 
 function account(overrides: Partial<AccountSummary> & Pick<AccountSummary, "accountId" | "email">): AccountSummary {
@@ -42,6 +43,15 @@ function account(overrides: Partial<AccountSummary> & Pick<AccountSummary, "acco
     isEmailDuplicate: overrides.isEmailDuplicate,
   };
 }
+
+describe("formatRequestSuccessRate", () => {
+  it("counts the request API's ok status as successful", () => {
+    expect(formatRequestSuccessRate([
+      createRequestLogEntry({ requestId: "ok", status: "ok" }),
+      createRequestLogEntry({ requestId: "failed", status: "rate_limit" }),
+    ])).toBe("50%");
+  });
+});
 
 describe("buildDepletionView", () => {
   it("returns null for null depletion", () => {

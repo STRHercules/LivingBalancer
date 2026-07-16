@@ -116,6 +116,12 @@ function resolveDashboardViewOptions(optionsOrIsDark: DashboardViewOptions | boo
   };
 }
 
+export function formatRequestSuccessRate(requests: RequestLog[]): string {
+  if (!requests.length) return "—";
+  const successful = requests.filter((request) => ["ok", "success", "completed"].includes(request.status)).length;
+  return `${Math.round(successful / requests.length * 100)}%`;
+}
+
 export function buildDepletionView(depletion: Depletion | null | undefined): SafeLineView | null {
   if (!depletion || depletion.riskLevel === "safe") return null;
   return { safePercent: depletion.safeUsagePercent, riskLevel: depletion.riskLevel };

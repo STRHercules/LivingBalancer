@@ -5,6 +5,7 @@ type TaskKey = "think" | "search" | "tool" | "write" | "verify";
 type Point3D = { x: number; y: number; z: number };
 type ScreenPoint = { x: number; y: number; z: number; perspective: number };
 type GlobePoint = Point3D & { size: number; alpha: number; warm: boolean; phase: number };
+type RenderedGlobePoint = { source: GlobePoint; x: number; y: number; z: number; perspective: number };
 type Dust = Point3D & { size: number; alpha: number };
 type Satellite = {
   id: number;
@@ -26,6 +27,7 @@ type Pulse = { x: number; y: number; color: string; startedAt: number; duration:
 type TaskConfig = { label: string; title: string; detail: string; color: string; duration: number; packets: number };
 type ActiveTask = { key: TaskKey; config: TaskConfig; startedAt: number; duration: number; nextPacketAt: number };
 type QueuedTask = { taskKey: TaskKey; label?: string };
+export type SatelliteSummary = { id: number; label: string; type: string; color: string };
 
 const TASKS: Record<TaskKey, TaskConfig> = {
   think: { label: "Reasoning", title: "Mapping possible solutions", detail: "Evaluating branches, constraints, and likely outcomes", color: "#ffac5c", duration: 4200, packets: 16 },
@@ -53,13 +55,14 @@ function seededNoise(value: number) {
   return noise - Math.floor(noise);
 }
 
-export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", eventLabel, model = "Waiting for traffic", context = "living-codex / globe" }: {
+export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", eventLabel, model = "Waiting for traffic", context = "living-codex / globe", onSatellitesChange }: {
   activity?: number;
   eventId?: string;
   activityKind?: ActivityKind;
   eventLabel?: string;
   model?: string;
   context?: string;
+  onSatellitesChange?: (satellites: SatelliteSummary[]) => void;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -88,11 +91,12 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
   useEffect(() => {
     const stage = stageRef.current;
     const canvas = canvasRef.current;
-    const ctx = canvas?.getContext("2d", { alpha: true });
+    const ctx = canvas?.getContext("2d", { alpha: true, desynchronized: true });
     if (!stage || !canvas || !ctx) return;
 
     const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
     const globePoints: GlobePoint[] = [];
+    const renderedGlobePoints: RenderedGlobePoint[] = [];
     const atmosphereDust: Dust[] = [];
     const knowledge: Satellite[] = [];
     const packets: Packet[] = [];
@@ -104,6 +108,10 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     let centerX = 0;
     let centerY = 0;
     let rotation = 0;
+    let cosineYaw = 1;
+    let sineYaw = 0;
+    let cosinePitch = 1;
+    let sinePitch = 0;
     let pointerX = 0;
     let pointerY = 0;
     let targetPointerX = 0;
@@ -118,9 +126,10 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     let auto = false;
     let autoAt = performance.now() + 1800;
     let lastFrame = performance.now();
-    let lastDraw = 0;
     let isVisible = true;
     let frame = 0;
+
+    const syncSatellites = () => onSatellitesChange?.(knowledge.map((satellite) => ({ id: satellite.id, label: satellite.label, type: TASKS[satellite.taskKey].label, color: satellite.color })));
 
     const makeGlobe = () => {
       globePoints.length = 0;
@@ -145,31 +154,36 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         const distance = random(1.05, 1.34);
         atmosphereDust.push({ x: Math.sin(phi) * Math.cos(theta) * distance, y: Math.cos(phi) * distance, z: Math.sin(phi) * Math.sin(theta) * distance, alpha: random(0.04, 0.18), size: random(0.25, 0.8) });
       }
+      renderedGlobePoints.length = 0;
+      for (const source of globePoints) renderedGlobePoints.push({ source, x: 0, y: 0, z: 0, perspective: 1 });
     };
 
     const resize = () => {
       const rect = stage.getBoundingClientRect();
       const dpr = clamp(devicePixelRatio || 1, 1, 2);
+      const pixelWidth = Math.floor(rect.width * dpr);
+      const pixelHeight = Math.floor(rect.height * dpr);
+      if (width === rect.width && height === rect.height && canvas.width === pixelWidth && canvas.height === pixelHeight) return;
+      const nextRadius = clamp(Math.min(rect.width * 0.24, rect.height * 0.36), 128, 260);
+      const radiusChanged = radius !== nextRadius;
       width = rect.width;
       height = rect.height;
       centerX = width * 0.5;
       centerY = height * 0.45;
-      radius = clamp(Math.min(width * 0.24, height * 0.36), 128, 260);
-      canvas.width = Math.floor(width * dpr);
-      canvas.height = Math.floor(height * dpr);
+      radius = nextRadius;
+      canvas.width = pixelWidth;
+      canvas.height = pixelHeight;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      makeGlobe();
+      if (radiusChanged || !globePoints.length) makeGlobe();
     };
 
     const rotatePoint = (point: Point3D, extraRotation = 0): Point3D => {
-      const yaw = rotation + extraRotation + pointerX * 0.15;
-      const pitch = -0.16 + pointerY * 0.08;
-      const cosineYaw = Math.cos(yaw);
-      const sineYaw = Math.sin(yaw);
-      const cosinePitch = Math.cos(pitch);
-      const sinePitch = Math.sin(pitch);
-      const x = point.x * cosineYaw - point.z * sineYaw;
-      const z = point.x * sineYaw + point.z * cosineYaw;
+      const extraCosine = extraRotation ? Math.cos(extraRotation) : 1;
+      const extraSine = extraRotation ? Math.sin(extraRotation) : 0;
+      const yawCosine = cosineYaw * extraCosine - sineYaw * extraSine;
+      const yawSine = sineYaw * extraCosine + cosineYaw * extraSine;
+      const x = point.x * yawCosine - point.z * yawSine;
+      const z = point.x * yawSine + point.z * yawCosine;
       return { x, y: point.y * cosinePitch - z * sinePitch, z: point.y * sinePitch + z * cosinePitch };
     };
 
@@ -238,6 +252,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       const finishedTitle = activeTask.config.title;
       knowledge.push({ ...activeSatellite, createdAt: performance.now() - random(2000, 7000), orbit: 1.17 + knowledge.length % 6 * 0.038, speed: random(0.035, 0.085) * (Math.random() > 0.5 ? 1 : -1) });
       if (knowledge.length > 84) knowledge.shift();
+      syncSatellites();
       if (knowledgeRef.current) knowledgeRef.current.textContent = String(knowledge.length);
       if (activityValueRef.current) activityValueRef.current.textContent = "Task completed";
       if (eyebrowRef.current) eyebrowRef.current.textContent = "Knowledge integrated";
@@ -293,13 +308,21 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     };
 
     const drawAtmosphere = (time: number) => {
+      const angle = time * 0.000018;
+      const extraCosine = Math.cos(angle);
+      const extraSine = Math.sin(angle);
+      const yawCosine = cosineYaw * extraCosine - sineYaw * extraSine;
+      const yawSine = sineYaw * extraCosine + cosineYaw * extraSine;
       ctx.save();
       for (const dust of atmosphereDust) {
-        const rotated = rotatePoint(dust, time * 0.000018);
-        const point = project(rotated);
-        ctx.globalAlpha = dust.alpha * clamp((rotated.z + 1.5) / 2.5, 0, 1);
+        const x = dust.x * yawCosine - dust.z * yawSine;
+        const z = dust.x * yawSine + dust.z * yawCosine;
+        const y = dust.y * cosinePitch - z * sinePitch;
+        const rotatedZ = dust.y * sinePitch + z * cosinePitch;
+        const perspective = 3.2 / (3.2 - rotatedZ * 0.52);
+        ctx.globalAlpha = dust.alpha * clamp((rotatedZ + 1.5) / 2.5, 0, 1);
         ctx.fillStyle = "#39bfff";
-        ctx.fillRect(point.x, point.y, dust.size, dust.size);
+        ctx.fillRect(centerX + x * radius * perspective, centerY + y * radius * perspective, dust.size, dust.size);
       }
       ctx.restore();
     };
@@ -325,16 +348,24 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     };
 
     const drawGlobePoints = (time: number) => {
-      const points = globePoints.map((source) => ({ source, rotated: rotatePoint(source) })).sort((a, b) => a.rotated.z - b.rotated.z);
+      for (const point of renderedGlobePoints) {
+        const source = point.source;
+        point.x = source.x * cosineYaw - source.z * sineYaw;
+        const z = source.x * sineYaw + source.z * cosineYaw;
+        point.y = source.y * cosinePitch - z * sinePitch;
+        point.z = source.y * sinePitch + z * cosinePitch;
+        point.perspective = 3.2 / (3.2 - point.z * 0.52);
+      }
+      renderedGlobePoints.sort((a, b) => a.z - b.z);
       ctx.save();
-      for (const { source, rotated } of points) {
-        const point = project(rotated);
-        const front = clamp((rotated.z + 1) / 2, 0, 1);
-        const alpha = source.alpha * (0.18 + front * 0.82) * clamp(1 - Math.abs(rotated.z) * 0.12, 0.5, 1) * (0.72 + Math.sin(time * 0.003 + source.phase) * 0.28);
+      for (const point of renderedGlobePoints) {
+        const source = point.source;
+        const front = clamp((point.z + 1) / 2, 0, 1);
+        const alpha = source.alpha * (0.18 + front * 0.82) * clamp(1 - Math.abs(point.z) * 0.12, 0.5, 1) * (0.72 + Math.sin(time * 0.003 + source.phase) * 0.28);
         const color = source.warm ? "#ffb160" : front > 0.67 ? "#45ddff" : "#198fc7";
         const size = source.size * (0.58 + front * 0.78) * point.perspective;
         ctx.globalAlpha = alpha; ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = size > 1.2 && front > 0.45 ? 6 + size * 2 : 0;
-        ctx.beginPath(); ctx.arc(point.x, point.y, Math.max(0.35, size), 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(centerX + point.x * radius * point.perspective, centerY + point.y * radius * point.perspective, Math.max(0.35, size), 0, Math.PI * 2); ctx.fill();
       }
       ctx.restore(); ctx.shadowBlur = 0; ctx.globalAlpha = 1;
     };
@@ -360,8 +391,27 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       ctx.save();
       for (let index = 0; index < rendered.length; index += 1) {
         const source = rendered[index];
-        const nearest = rendered.filter((_, candidate) => candidate !== index).map((target) => ({ target, distance: Math.hypot(source.point.x - target.point.x, source.point.y - target.point.y) })).filter(({ distance }) => distance < radius * 0.72).sort((a, b) => a.distance - b.distance).slice(0, 2);
-        for (const { target, distance } of nearest) {
+        let nearestIndex = -1;
+        let secondIndex = -1;
+        let nearestDistance = Infinity;
+        let secondDistance = Infinity;
+        for (let candidate = 0; candidate < rendered.length; candidate += 1) {
+          if (candidate === index) continue;
+          const target = rendered[candidate];
+          const distance = Math.hypot(source.point.x - target.point.x, source.point.y - target.point.y);
+          if (distance >= radius * 0.72) continue;
+          if (distance < nearestDistance) {
+            secondIndex = nearestIndex; secondDistance = nearestDistance;
+            nearestIndex = candidate; nearestDistance = distance;
+          } else if (distance < secondDistance) {
+            secondIndex = candidate; secondDistance = distance;
+          }
+        }
+        for (let nearest = 0; nearest < 2; nearest += 1) {
+          const candidate = nearest ? secondIndex : nearestIndex;
+          if (candidate < 0) continue;
+          const distance = nearest ? secondDistance : nearestDistance;
+          const target = rendered[candidate];
           if (target.satellite.id < source.satellite.id) continue;
           ctx.beginPath(); ctx.moveTo(source.point.x, source.point.y); ctx.lineTo(target.point.x, target.point.y); ctx.strokeStyle = `rgba(67,176,230,${0.025 + (1 - distance / (radius * 0.72)) * 0.1})`; ctx.lineWidth = 0.55; ctx.stroke();
         }
@@ -426,8 +476,17 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     };
 
     const updateHoverLabel = (activePoint: ScreenPoint | null) => {
-      const hovered = [...knowledge, ...(activeSatellite ? [activeSatellite] : [])].map((satellite) => ({ satellite, distance: Math.hypot((satellite.screenX ?? -1000) - hoverX, (satellite.screenY ?? -1000) - hoverY) })).sort((a, b) => a.distance - b.distance)[0];
-      if (hovered && hovered.distance <= 14) showSatelliteLabel(hovered.satellite, { x: hovered.satellite.screenX!, y: hovered.satellite.screenY! });
+      let hovered: Satellite | null = null;
+      let nearestDistance = Infinity;
+      for (const satellite of knowledge) {
+        const distance = Math.hypot((satellite.screenX ?? -1000) - hoverX, (satellite.screenY ?? -1000) - hoverY);
+        if (distance < nearestDistance) { hovered = satellite; nearestDistance = distance; }
+      }
+      if (activeSatellite) {
+        const distance = Math.hypot((activeSatellite.screenX ?? -1000) - hoverX, (activeSatellite.screenY ?? -1000) - hoverY);
+        if (distance < nearestDistance) { hovered = activeSatellite; nearestDistance = distance; }
+      }
+      if (hovered && nearestDistance <= 14) showSatelliteLabel(hovered, { x: hovered.screenX!, y: hovered.screenY! });
       else if (activeSatellite && activePoint) showSatelliteLabel(activeSatellite, activePoint);
       else labelRef.current?.classList.remove("visible");
     };
@@ -447,16 +506,19 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
 
     const draw = (time: number) => {
       frame = requestAnimationFrame(draw);
-      if (!isVisible || document.hidden || time - lastDraw < 1000 / 30) return;
-      lastDraw = time;
+      if (!isVisible || document.hidden) return;
       const signal = signalRef.current;
       if (signal.eventId && signal.eventId !== lastEventId) {
         startTask(TASK_FOR_ACTIVITY[signal.activityKind], signal.eventLabel);
         lastEventId = signal.eventId;
       }
       const delta = Math.min(40, time - lastFrame); lastFrame = time;
-      pointerX = lerp(pointerX, targetPointerX, 0.035); pointerY = lerp(pointerY, targetPointerY, 0.035);
+      const pointerEase = 1 - (1 - 0.035) ** (delta / (1000 / 30));
+      pointerX = lerp(pointerX, targetPointerX, pointerEase); pointerY = lerp(pointerY, targetPointerY, pointerEase);
       rotation += reducedMotion ? 0 : delta * (activeTask ? 0.00017 : 0.000085);
+      const yaw = rotation + pointerX * 0.15;
+      const pitch = -0.16 + pointerY * 0.08;
+      cosineYaw = Math.cos(yaw); sineYaw = Math.sin(yaw); cosinePitch = Math.cos(pitch); sinePitch = Math.sin(pitch);
       ctx.clearRect(0, 0, width, height);
       drawBackgroundAura(time); drawOrbitRings(time); drawAtmosphere(time); drawKnowledge(time); drawGlobeShell(); drawGlobePoints(time); drawPackets(time); drawPulses(time); drawCore(time);
       const activePoint = drawActiveSatellite(time);
@@ -476,7 +538,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     const leave = () => { targetPointerX = 0; targetPointerY = 0; hoverX = -1000; hoverY = -1000; };
     const runManual = (event: Event) => { const taskKey = (event as CustomEvent<TaskKey>).detail; startTask(taskKey); };
     const toggleAuto = () => { auto = !auto; autoRef.current?.setAttribute("aria-pressed", String(auto)); if (auto && !activeTask) autoAt = performance.now() + 700; };
-    const clear = () => { knowledge.length = 0; packets.length = 0; pulses.length = 0; packetTotal = 0; if (knowledgeRef.current) knowledgeRef.current.textContent = "0"; if (packetRef.current) packetRef.current.textContent = "0"; };
+    const clear = () => { knowledge.length = 0; packets.length = 0; pulses.length = 0; packetTotal = 0; syncSatellites(); if (knowledgeRef.current) knowledgeRef.current.textContent = "0"; if (packetRef.current) packetRef.current.textContent = "0"; };
 
     const observer = new ResizeObserver(resize);
     const visibilityObserver = new IntersectionObserver(([entry]) => { isVisible = entry.isIntersecting; });
@@ -487,17 +549,19 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     stage.addEventListener("living-task", runManual);
     stage.addEventListener("living-auto", toggleAuto);
     stage.addEventListener("living-clear", clear);
+    window.addEventListener("resize", resize);
     resize();
     (["think", "search", "tool", "write", "verify", "search", "think", "tool"] as TaskKey[]).forEach((taskKey, index) => {
       const satellite = makeSatellite(taskKey, TASKS[taskKey].title, TASKS[taskKey].color, false);
       satellite.createdAt -= index * 830; satellite.angle += index * 0.74; knowledge.push(satellite);
     });
+    syncSatellites();
     if (knowledgeRef.current) knowledgeRef.current.textContent = String(knowledge.length);
     frame = requestAnimationFrame(draw);
     return () => {
-      cancelAnimationFrame(frame); observer.disconnect(); visibilityObserver.disconnect(); stage.removeEventListener("pointermove", move); stage.removeEventListener("pointerleave", leave); stage.removeEventListener("living-task", runManual); stage.removeEventListener("living-auto", toggleAuto); stage.removeEventListener("living-clear", clear);
+      cancelAnimationFrame(frame); observer.disconnect(); visibilityObserver.disconnect(); window.removeEventListener("resize", resize); stage.removeEventListener("pointermove", move); stage.removeEventListener("pointerleave", leave); stage.removeEventListener("living-task", runManual); stage.removeEventListener("living-auto", toggleAuto); stage.removeEventListener("living-clear", clear);
     };
-  }, []);
+  }, [onSatellitesChange]);
 
   const dispatch = (name: string, detail?: TaskKey) => stageRef.current?.dispatchEvent(new CustomEvent(name, { detail }));
 

@@ -1,7 +1,9 @@
-import { Activity, CircleDollarSign, Gauge, Zap } from "lucide-react";
+import { useEffect, useState, type CSSProperties } from "react";
+import { Activity, ChevronDown, ChevronUp, CircleDollarSign, Maximize2, Minimize2, Gauge, Zap } from "lucide-react";
 
-import { CodexGlobe } from "./codex-globe";
+import { CodexGlobe, type SatelliteSummary } from "./codex-globe";
 import type { DashboardOverview, RequestLog } from "../schemas";
+import { formatRequestSuccessRate } from "../utils";
 import { useLocalActivity, useLocalSessions, useLocalUsage } from "@/features/local-usage/hooks/use-local-usage";
 import "./living-dashboard.css";
 
@@ -13,6 +15,9 @@ function value(value: number | null | undefined) {
 }
 
 export function LivingDashboard({ overview, requests }: { overview: DashboardOverview; requests: RequestLog[] }) {
+  const [satellites, setSatellites] = useState<SatelliteSummary[]>([]);
+  const [activityOpen, setActivityOpen] = useState(true);
+  const [globeExpanded, setGlobeExpanded] = useState(false);
   const localUsage = useLocalUsage("today").data;
   const activity = useLocalActivity().data;
   const localSessions = useLocalSessions("codex", "today").data;
@@ -24,9 +29,15 @@ export function LivingDashboard({ overview, requests }: { overview: DashboardOve
   const input = codex?.tokens_in ?? requests.reduce((sum, request) => sum + (request.inputTokens ?? 0), 0);
   const output = codex?.tokens_out ?? requests.reduce((sum, request) => sum + (request.outputTokens ?? 0), 0);
   const cached = codex?.tokens_cache ?? requests.reduce((sum, request) => sum + (request.cachedInputTokens ?? 0), 0);
-  const successCount = requests.filter((request) => ["success", "completed"].includes(request.status)).length;
-  const successRate = requests.length ? `${Math.round(successCount / requests.length * 100)}%` : "—";
+  const successRate = formatRequestSuccessRate(requests);
   const latestEvent = activity?.events.at(-1);
+
+  useEffect(() => {
+    if (!globeExpanded) return;
+    const close = (event: KeyboardEvent) => { if (event.key === "Escape") setGlobeExpanded(false); };
+    document.addEventListener("keydown", close);
+    return () => document.removeEventListener("keydown", close);
+  }, [globeExpanded]);
 
   const signals = [
     ["MODEL", session?.model || latest?.model || "Waiting for traffic", latest?.reasoningEffort || "default"],
@@ -39,30 +50,23 @@ export function LivingDashboard({ overview, requests }: { overview: DashboardOve
 
   return (
     <section className="living-dashboard" aria-label="Living Codex dashboard">
-      <aside className="living-panel living-accounts">
-        <div className="living-panel-title">Accounts <span>{overview.accounts.length}</span></div>
-        <div className="living-account-list">
-          {overview.accounts.slice(0, 5).map((account) => {
-            const remaining = account.usage?.primaryRemainingPercent ?? 0;
-            return (
-              <div className="living-account" key={account.accountId}>
-                <div><strong>{account.displayName || account.email || account.accountId}</strong><span>{account.status}</span></div>
-                <div className="living-meter"><i style={{ width: `${Math.max(0, Math.min(100, remaining))}%` }} /></div>
-                <div className="living-account-meta"><span>{remaining.toFixed(0)}% remaining</span><span>{account.planType || "Codex"}</span></div>
-              </div>
-            );
-          })}
-        </div>
-        <div className="living-account-summary">
-          <span>Capacity remaining</span>
-          <strong>{overview.summary.primaryWindow.remainingPercent.toFixed(1)}%</strong>
+      <aside className="living-panel living-satellites">
+        <div className="living-panel-title">Satellites <span>{satellites.length}</span></div>
+        <div className="living-satellite-list">
+          {satellites.map((satellite) => (
+            <div className="living-satellite" key={satellite.id} style={{ "--satellite-color": satellite.color } as CSSProperties}>
+              <strong>{satellite.label}</strong>
+              <span>{satellite.type}</span>
+            </div>
+          ))}
+          {!satellites.length ? <p>Satellites will appear as Codex completes tasks.</p> : null}
         </div>
       </aside>
 
-      <div className="living-panel living-core">
-        <div className="living-panel-title">Living Codex <span>{latest ? "request telemetry" : "standing by"}</span></div>
+      <div className={`living-panel living-core${globeExpanded ? " is-expanded" : ""}`}>
+        <div className="living-panel-title">Living Codex <div className="living-panel-actions"><span>{latest ? "request telemetry" : "standing by"}</span><button type="button" aria-label={globeExpanded ? "Restore globe panel" : "Expand globe panel"} aria-pressed={globeExpanded} onClick={() => setGlobeExpanded((expanded) => !expanded)}>{globeExpanded ? <Minimize2 /> : <Maximize2 />}</button></div></div>
         <div className="living-globe-scene">
-          <CodexGlobe activity={recentTokens} eventId={latestEvent?.id} activityKind={latestEvent?.kind} eventLabel={latestEvent?.label} model={signals[0][1]} context={signals[2][1]} />
+          <CodexGlobe activity={recentTokens} eventId={latestEvent?.id} activityKind={latestEvent?.kind} eventLabel={latestEvent?.label} model={signals[0][1]} context={signals[2][1]} onSatellitesChange={setSatellites} />
         </div>
       </div>
 
@@ -88,8 +92,8 @@ export function LivingDashboard({ overview, requests }: { overview: DashboardOve
       </aside>
 
       <div className="living-panel living-feed">
-        <div className="living-panel-title">Live Codex activity <span>{activity?.events.length ?? 0} events</span></div>
-        <div className="living-feed-rows">
+        <div className="living-panel-title">Live Codex activity <button type="button" aria-expanded={activityOpen} aria-controls="living-codex-activity" onClick={() => setActivityOpen((open) => !open)}><span>{activity?.events.length ?? 0} events</span>{activityOpen ? <ChevronUp /> : <ChevronDown />}</button></div>
+        <div className="living-feed-rows" id="living-codex-activity" hidden={!activityOpen}>
           {[...(activity?.events ?? [])].reverse().slice(0, 6).map((event) => (
             <div key={event.id} data-kind={event.kind}>
               <time>{event.timestamp ? new Date(event.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "now"}</time>
