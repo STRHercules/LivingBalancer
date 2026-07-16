@@ -1,19 +1,29 @@
 import { useEffect, useRef } from "react";
-import { generateUniqueSatelliteNameMetadata, hashTaskSeed, type SatelliteNameMetadata, type SatelliteType } from "../satellite-naming";
+import { generateUniqueSatelliteNameMetadata, hashTaskSeed, type SatelliteType } from "../satellite-naming";
+import {
+  LEGACY_SATELLITE_STORAGE_KEY,
+  UNIVERSE_CONFIG,
+  UNIVERSE_STORAGE_KEY,
+  addSatellite,
+  advanceUniverse,
+  createUniverse,
+  evaluateExpansion,
+  restoreUniverse,
+  routeSignal,
+  summarizeUniverse,
+  type TaskKey,
+  type UniverseSatellite,
+  type UniverseState,
+  type UniverseSummary,
+} from "../universe";
 
 type ActivityKind = "idle" | "thinking" | "workflow" | "tool" | "search";
-type TaskKey = "think" | "search" | "tool" | "write" | "verify";
 type Point3D = { x: number; y: number; z: number };
 type ScreenPoint = { x: number; y: number; z: number; perspective: number };
 type GlobePoint = Point3D & { size: number; alpha: number; warm: boolean; phase: number };
 type RenderedGlobePoint = { source: GlobePoint; x: number; y: number; z: number; perspective: number };
 type Dust = Point3D & { size: number; alpha: number };
-type Satellite = {
-  id: string;
-  taskKey: TaskKey;
-  naming: SatelliteNameMetadata;
-  color: string;
-  createdAtIso: string;
+type Satellite = UniverseSatellite & {
   createdAt: number;
   angle: number;
   incline: number;
@@ -29,7 +39,6 @@ type Pulse = { x: number; y: number; color: string; startedAt: number; duration:
 type TaskConfig = { label: string; title: string; detail: string; color: string; duration: number; packets: number };
 type ActiveTask = { key: TaskKey; config: TaskConfig; startedAt: number; duration: number; nextPacketAt: number };
 type QueuedTask = { taskKey: TaskKey; label?: string; taskSeed?: string };
-type StoredSatellite = Pick<Satellite, "id" | "taskKey" | "naming" | "color" | "createdAtIso">;
 export type SatelliteSummary = { id: string; label: string; type: string; color: string };
 
 const TASKS: Record<TaskKey, TaskConfig> = {
@@ -43,7 +52,6 @@ const TASKS: Record<TaskKey, TaskConfig> = {
 const TASK_FOR_ACTIVITY: Record<ActivityKind, TaskKey> = { idle: "write", thinking: "think", workflow: "verify", tool: "tool", search: "search" };
 const SATELLITE_TYPE_FOR_TASK: Record<TaskKey, SatelliteType> = { think: "thinking", search: "search", tool: "tools", write: "communication", verify: "verification" };
 const TASK_BUTTONS: Record<TaskKey, [string, string]> = { think: ["Think", "reason"], search: ["Search", "retrieve"], tool: ["Use tool", "execute"], write: ["Write", "synthesize"], verify: ["Verify", "inspect"] };
-const SATELLITE_STORAGE_KEY = "codex-lb-living-satellites-v1";
 const SHOW_SIMULATOR_CONTROLS = false;
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const lerp = (from: number, to: number, amount: number) => from + (to - from) * amount;
@@ -60,16 +68,18 @@ function seededNoise(value: number) {
   return noise - Math.floor(noise);
 }
 
-function loadStoredSatellites(): StoredSatellite[] | null {
+type LegacySatellite = Pick<Satellite, "id" | "taskKey" | "naming" | "color" | "createdAtIso">;
+
+function loadLegacySatellites(): LegacySatellite[] | null {
   try {
-    const stored = window.localStorage.getItem(SATELLITE_STORAGE_KEY);
+    const stored = window.localStorage.getItem(LEGACY_SATELLITE_STORAGE_KEY);
     if (stored === null) return null;
     const value: unknown = JSON.parse(stored);
     if (!Array.isArray(value)) return [];
     const names = new Set<string>();
-    return value.filter((satellite): satellite is StoredSatellite => {
+    return value.filter((satellite): satellite is LegacySatellite => {
       if (!satellite || typeof satellite !== "object") return false;
-      const record = satellite as Partial<StoredSatellite>;
+      const record = satellite as Partial<LegacySatellite>;
       const name = record.naming?.displayName;
       if (typeof record.id !== "string" || !(record.taskKey && record.taskKey in TASKS) || typeof record.color !== "string" || typeof record.createdAtIso !== "string" || typeof name !== "string" || name.length < 4 || name.length > 40 || names.has(name)) return false;
       names.add(name);
@@ -80,7 +90,31 @@ function loadStoredSatellites(): StoredSatellite[] | null {
   }
 }
 
-export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", eventLabel, model = "Waiting for traffic", context = "living-codex / globe", onSatellitesChange }: {
+function loadUniverse(): UniverseState {
+  try {
+    const stored = window.localStorage.getItem(UNIVERSE_STORAGE_KEY);
+    const restored = stored ? restoreUniverse(JSON.parse(stored)) : null;
+    if (restored) { evaluateExpansion(restored); return restored; }
+  } catch {
+    // Fall through to legacy migration or a fresh universe.
+  }
+  const legacy = loadLegacySatellites();
+  const initial = legacy ?? (() => {
+    const names = new Set<string>();
+    return (["think", "search", "tool", "write", "verify", "search", "think", "tool"] as TaskKey[]).map((taskKey, index) => ({
+      id: `sat_${String(index + 1).padStart(6, "0")}`,
+      taskKey,
+      naming: generateUniqueSatelliteNameMetadata({ type: SATELLITE_TYPE_FOR_TASK[taskKey], index: index + 1, taskSeed: hashTaskSeed(`bootstrap-${index + 1}`), generation: 1 }, names),
+      color: TASKS[taskKey].color,
+      createdAtIso: new Date().toISOString(),
+    }));
+  })();
+  const universe = createUniverse(initial);
+  evaluateExpansion(universe);
+  return universe;
+}
+
+export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", eventLabel, model = "Waiting for traffic", context = "living-codex / globe", onSatellitesChange, onUniverseChange }: {
   activity?: number;
   eventId?: string;
   activityKind?: ActivityKind;
@@ -88,6 +122,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
   model?: string;
   context?: string;
   onSatellitesChange?: (satellites: SatelliteSummary[]) => void;
+  onUniverseChange?: (summary: UniverseSummary) => void;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -128,12 +163,13 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     const pulses: Pulse[] = [];
     const queue: QueuedTask[] = [];
     const assignedNames = new Set<string>();
-    const storedState = loadStoredSatellites();
-    const storedSatellites = storedState ?? [];
+    const universe = loadUniverse();
+    const storedSatellites = universe.satellites;
     let nextCreationIndex = Math.max(0, ...storedSatellites.map((satellite) => satellite.naming.index || 0)) + 1;
     let width = 1;
     let height = 1;
     let radius = 180;
+    let viewportRadius = 180;
     let centerX = 0;
     let centerY = 0;
     let rotation = 0;
@@ -157,11 +193,27 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     let lastFrame = performance.now();
     let isVisible = true;
     let frame = 0;
+    let currentPlanetColor = "#37d7ff";
+    let cameraPanX = universe.camera.panX;
+    let cameraPanY = universe.camera.panY;
+    let cameraZoom = universe.camera.zoom;
+    let cameraRotation = universe.camera.rotation;
+    let dragging = false;
+    let dragButton = 0;
+    let dragX = 0;
+    let dragY = 0;
+    let dragMoved = false;
+    let lastUniverseSync = 0;
+    const planetScreens = new Map<string, { x: number; y: number; radius: number; z: number }>();
 
-    const syncSatellites = () => onSatellitesChange?.(knowledge.map((satellite) => ({ id: satellite.id, label: satellite.naming.displayName, type: TASKS[satellite.taskKey].label, color: satellite.color })));
-    const persistSatellites = () => {
+    const syncUniverse = () => {
+      onSatellitesChange?.(universe.satellites.map((satellite) => ({ id: satellite.id, label: satellite.naming.displayName, type: TASKS[satellite.taskKey].label, color: satellite.color })));
+      onUniverseChange?.(summarizeUniverse(universe));
+    };
+    const persistUniverse = () => {
       try {
-        window.localStorage.setItem(SATELLITE_STORAGE_KEY, JSON.stringify(knowledge.map(({ id, taskKey, naming, color, createdAtIso }) => ({ id, taskKey, naming, color, createdAtIso }))));
+        universe.camera = { ...universe.camera, panX: cameraPanX, panY: cameraPanY, zoom: cameraZoom, rotation: cameraRotation };
+        window.localStorage.setItem(UNIVERSE_STORAGE_KEY, JSON.stringify(universe));
       } catch {
         // Storage may be unavailable in private or policy-restricted browser contexts.
       }
@@ -201,12 +253,13 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       const pixelHeight = Math.floor(rect.height * dpr);
       if (width === rect.width && height === rect.height && canvas.width === pixelWidth && canvas.height === pixelHeight) return;
       const nextRadius = clamp(Math.min(rect.width * 0.24, rect.height * 0.36), 128, 260);
-      const radiusChanged = radius !== nextRadius;
+      const radiusChanged = viewportRadius !== nextRadius;
       width = rect.width;
       height = rect.height;
       centerX = width * 0.5;
       centerY = height * 0.45;
       radius = nextRadius;
+      viewportRadius = nextRadius;
       canvas.width = pixelWidth;
       canvas.height = pixelHeight;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -228,7 +281,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       return { x: centerX + point.x * radius * scale * perspective, y: centerY + point.y * radius * scale * perspective, z: point.z, perspective };
     };
 
-    const makeSatellite = (taskKey: TaskKey, taskSeed: string, color: string, active = true, stored?: StoredSatellite): Satellite => {
+    const makeSatellite = (taskKey: TaskKey, taskSeed: string, color: string, active = true, stored?: UniverseSatellite): Satellite => {
       const naming = stored?.naming ?? generateUniqueSatelliteNameMetadata({
         type: SATELLITE_TYPE_FOR_TASK[taskKey],
         index: nextCreationIndex++,
@@ -242,6 +295,11 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         naming,
         color,
         createdAtIso: stored?.createdAtIso ?? new Date().toISOString(),
+        planetId: stored?.planetId ?? universe.universe.focusedPlanetId,
+        previousPlanetId: stored?.previousPlanetId ?? null,
+        migrationState: stored?.migrationState ?? "none",
+        orbitSlot: stored?.orbitSlot ?? knowledge.length,
+        transferHistory: stored?.transferHistory ?? [],
         createdAt: performance.now(),
         angle: random(0, Math.PI * 2),
         incline: random(-0.72, 0.72),
@@ -298,6 +356,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       const config = { ...TASKS[taskKey], ...(label ? { title: label } : {}) };
       activeTask = { key: taskKey, config, startedAt: performance.now(), duration: reducedMotion ? Math.max(2100, config.duration * 0.7) : config.duration, nextPacketAt: performance.now() };
       activeSatellite = makeSatellite(taskKey, taskSeed, config.color);
+      routeSignal(universe, taskKey);
       progress = 0;
       updateTaskUI(taskKey, config);
       for (let index = 0; index < 4; index += 1) emitPacket(config.color, index * 110);
@@ -305,10 +364,12 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
 
     const finishTask = () => {
       if (!activeTask || !activeSatellite) return;
+      addSatellite(universe, { id: activeSatellite.id, taskKey: activeSatellite.taskKey, naming: activeSatellite.naming, color: activeSatellite.color, createdAtIso: activeSatellite.createdAtIso });
+      const stored = universe.satellites.find(({ id }) => id === activeSatellite?.id);
+      if (stored) Object.assign(activeSatellite, stored);
       knowledge.push({ ...activeSatellite, createdAt: performance.now() - random(2000, 7000), orbit: 1.17 + knowledge.length % 6 * 0.038, speed: random(0.035, 0.085) * (Math.random() > 0.5 ? 1 : -1) });
-      if (knowledge.length > 84) knowledge.shift();
-      persistSatellites();
-      syncSatellites();
+      persistUniverse();
+      syncUniverse();
       if (knowledgeRef.current) knowledgeRef.current.textContent = String(knowledge.length);
       if (activityValueRef.current) activityValueRef.current.textContent = "Task completed";
       if (eyebrowRef.current) eyebrowRef.current.textContent = "Knowledge integrated";
@@ -390,7 +451,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       shell.addColorStop(0.9, "rgba(1,14,25,.16)");
       shell.addColorStop(1, "rgba(35,162,230,.075)");
       ctx.beginPath(); ctx.arc(centerX, centerY, radius, 0, Math.PI * 2); ctx.fillStyle = shell; ctx.fill();
-      ctx.beginPath(); ctx.arc(centerX, centerY, radius, 0, Math.PI * 2); ctx.strokeStyle = "rgba(61,180,243,.34)"; ctx.lineWidth = 1; ctx.shadowColor = "rgba(55,215,255,.45)"; ctx.shadowBlur = 15; ctx.stroke(); ctx.shadowBlur = 0;
+      ctx.beginPath(); ctx.arc(centerX, centerY, radius, 0, Math.PI * 2); ctx.strokeStyle = rgba(currentPlanetColor, .42); ctx.lineWidth = 1; ctx.shadowColor = rgba(currentPlanetColor, .55); ctx.shadowBlur = 15; ctx.stroke(); ctx.shadowBlur = 0;
       const terminator = ctx.createLinearGradient(centerX - radius, centerY, centerX + radius, centerY);
       terminator.addColorStop(0, "rgba(0,0,0,.57)"); terminator.addColorStop(0.42, "rgba(0,0,0,.02)"); terminator.addColorStop(1, "rgba(35,172,234,.04)");
       ctx.save(); ctx.beginPath(); ctx.arc(centerX, centerY, radius - 1, 0, Math.PI * 2); ctx.clip(); ctx.fillStyle = terminator; ctx.fillRect(centerX - radius, centerY - radius, radius * 2, radius * 2); ctx.restore();
@@ -418,7 +479,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         const source = point.source;
         const front = clamp((point.z + 1) / 2, 0, 1);
         const alpha = source.alpha * (0.18 + front * 0.82) * clamp(1 - Math.abs(point.z) * 0.12, 0.5, 1) * (0.72 + Math.sin(time * 0.003 + source.phase) * 0.28);
-        const color = source.warm ? "#ffb160" : front > 0.67 ? "#45ddff" : "#198fc7";
+        const color = source.warm ? "#ffb160" : currentPlanetColor;
         const size = source.size * (0.58 + front * 0.78) * point.perspective;
         ctx.globalAlpha = alpha; ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = size > 1.2 && front > 0.45 ? 6 + size * 2 : 0;
         ctx.beginPath(); ctx.arc(centerX + point.x * radius * point.perspective, centerY + point.y * radius * point.perspective, Math.max(0.35, size), 0, Math.PI * 2); ctx.fill();
@@ -427,7 +488,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     };
 
     const drawCore = (time: number) => {
-      const color = activeTask?.config.color ?? "#37d7ff";
+      const color = activeTask?.config.color ?? currentPlanetColor;
       const coreRadius = radius * 0.16 * (1 + Math.sin(time * 0.0024) * 0.035);
       const halo = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, coreRadius * 2.5);
       halo.addColorStop(0, rgba(color, 0.26)); halo.addColorStop(0.48, rgba(color, 0.08)); halo.addColorStop(1, rgba(color, 0));
@@ -442,8 +503,20 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       ctx.beginPath(); ctx.arc(centerX, centerY, 3.2, 0, Math.PI * 2); ctx.fillStyle = "#eaffff"; ctx.shadowColor = color; ctx.shadowBlur = 14; ctx.fill(); ctx.shadowBlur = 0;
     };
 
-    const drawKnowledge = (time: number) => {
-      const rendered = knowledge.map((satellite) => ({ satellite, point: satellitePosition(satellite, time) }));
+    const drawKnowledge = (time: number, planetId: string, detail: number) => {
+      const owned = knowledge.filter((satellite) => satellite.planetId === planetId && satellite.migrationState === "none");
+      const limit = detail === 0 ? 260 : detail === 1 ? 90 : 0;
+      const step = limit ? Math.max(1, Math.ceil(owned.length / limit)) : owned.length + 1;
+      const rendered = owned.filter((_, index) => index % step === 0).map((satellite) => ({ satellite, point: satellitePosition(satellite, time) }));
+      if (owned.length > rendered.length) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.ellipse(centerX, centerY, radius * 1.34, radius * .48, -.32, 0, Math.PI * 2);
+        ctx.strokeStyle = rgba(currentPlanetColor, Math.min(.34, .08 + owned.length / 4_000));
+        ctx.lineWidth = Math.min(5, 1 + owned.length / 2_500);
+        ctx.stroke();
+        ctx.restore();
+      }
       ctx.save();
       for (let index = 0; index < rendered.length; index += 1) {
         const source = rendered[index];
@@ -489,8 +562,8 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       if (labelNameRef.current) labelNameRef.current.textContent = satellite.naming.displayName;
     };
 
-    const drawActiveSatellite = (time: number) => {
-      if (!activeSatellite) return null;
+    const drawActiveSatellite = (time: number, planetId: string) => {
+      if (!activeSatellite || activeSatellite.planetId !== planetId) return null;
       const point = satellitePosition(activeSatellite, time);
       activeSatellite.screenX = point.x; activeSatellite.screenY = point.y;
       const pulse = 1 + Math.sin(time * 0.008) * 0.18;
@@ -560,6 +633,83 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       if (progress >= 1) finishTask();
     };
 
+    const PLANET_COLORS = ["#37d7ff", "#b080ff", "#ffac5c", "#52f6ad", "#ff6f87"];
+    const placePlanets = () => {
+      planetScreens.clear();
+      const focused = universe.planets.find(({ id }) => id === universe.universe.focusedPlanetId) ?? universe.planets[0];
+      const overview = universe.planets.length > 1 && universe.camera.mode !== "planet-focus";
+      const centroid = overview ? universe.planets.reduce((point, planet) => ({ x: point.x + planet.position.x / universe.planets.length, y: point.y + planet.position.y / universe.planets.length, z: point.z + planet.position.z / universe.planets.length }), { x: 0, y: 0, z: 0 }) : focused.position;
+      const maxDistance = Math.max(1.8, ...universe.planets.map((planet) => Math.hypot(planet.position.x - centroid.x, planet.position.z - centroid.z)));
+      const scale = overview ? Math.min(width, height) * .38 / maxDistance * cameraZoom : viewportRadius * 1.7 * cameraZoom;
+      const cos = Math.cos(cameraRotation);
+      const sin = Math.sin(cameraRotation);
+      for (const planet of universe.planets) {
+        const dx = planet.position.x - centroid.x;
+        const dz = planet.position.z - centroid.z;
+        const x = dx * cos - dz * sin;
+        const depth = dx * sin + dz * cos;
+        let planetRadius = overview ? clamp(scale * .68, UNIVERSE_CONFIG.camera.minimumPlanetScreenSize, viewportRadius * .68) : planet.id === focused.id ? viewportRadius : clamp(viewportRadius * .2, 24, 54);
+        const expansion = universe.activeExpansion;
+        if (expansion?.childPlanetId === planet.id) planetRadius *= expansion.phase === "launching" ? 0 : expansion.phase === "forming" ? Math.max(.08, expansion.progress) : 1;
+        planetScreens.set(planet.id, { x: width * .5 + cameraPanX + x * scale, y: height * .45 + cameraPanY + (planet.position.y + depth * .1) * scale, radius: planetRadius, z: depth });
+      }
+    };
+
+    const curvePoint = (source: { x: number; y: number }, destination: { x: number; y: number }, amount: number, bend = -70) => {
+      const control = { x: (source.x + destination.x) * .5, y: (source.y + destination.y) * .5 + bend };
+      return { x: (1 - amount) ** 2 * source.x + 2 * (1 - amount) * amount * control.x + amount ** 2 * destination.x, y: (1 - amount) ** 2 * source.y + 2 * (1 - amount) * amount * control.y + amount ** 2 * destination.y };
+    };
+
+    const drawUniverseEffects = (time: number) => {
+      const expansion = universe.activeExpansion;
+      if (expansion) {
+        const source = planetScreens.get(expansion.parentPlanetId);
+        const destination = planetScreens.get(expansion.childPlanetId);
+        if (source && destination) {
+          ctx.save();
+          ctx.setLineDash([3, 8]);
+          ctx.beginPath(); ctx.moveTo(source.x, source.y); const control = curvePoint(source, destination, .5, -90); ctx.quadraticCurveTo(control.x, control.y - 45, destination.x, destination.y); ctx.strokeStyle = "rgba(255,172,92,.28)"; ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
+          if (expansion.phase === "launching") {
+            const point = curvePoint(source, destination, easeInOut(expansion.progress), -90);
+            const ahead = curvePoint(source, destination, Math.min(1, easeInOut(expansion.progress) + .015), -90);
+            ctx.translate(point.x, point.y); ctx.rotate(Math.atan2(ahead.y - point.y, ahead.x - point.x));
+            ctx.beginPath(); ctx.moveTo(9, 0); ctx.lineTo(-7, -4); ctx.lineTo(-4, 0); ctx.lineTo(-7, 4); ctx.closePath(); ctx.fillStyle = "#fff2d5"; ctx.shadowColor = "#ffac5c"; ctx.shadowBlur = 18; ctx.fill();
+          }
+          ctx.restore();
+        }
+      }
+      for (const signal of universe.activeSignals) {
+        const source = planetScreens.get(signal.sourcePlanetId);
+        const destination = planetScreens.get(signal.destinationPlanetId);
+        if (!source || !destination) continue;
+        const color = TASKS[signal.taskKey].color;
+        const bend = signal.taskKey === "think" ? -110 : signal.taskKey === "tool" ? -35 : -70;
+        const point = curvePoint(source, destination, easeInOut(signal.progress), bend);
+        const tail = curvePoint(source, destination, Math.max(0, easeInOut(signal.progress) - .08), bend);
+        ctx.save(); ctx.beginPath(); ctx.moveTo(source.x, source.y); const control = curvePoint(source, destination, .5, bend); ctx.quadraticCurveTo(control.x, control.y, destination.x, destination.y); ctx.strokeStyle = rgba(color, .16); ctx.lineWidth = signal.taskKey === "tool" ? 1.5 : .75; ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(tail.x, tail.y); ctx.lineTo(point.x, point.y); ctx.strokeStyle = rgba(color, .9); ctx.lineWidth = 1.4; ctx.shadowColor = color; ctx.shadowBlur = 10; ctx.stroke(); ctx.restore();
+      }
+      for (const migration of universe.activeMigrations) {
+        if (migration.progress <= 0) continue;
+        const source = planetScreens.get(migration.sourcePlanetId);
+        const destination = planetScreens.get(migration.destinationPlanetId);
+        if (!source || !destination) continue;
+        const point = curvePoint(source, destination, easeInOut(migration.progress), 55 + (migration.satelliteId.charCodeAt(migration.satelliteId.length - 1) % 5) * 8);
+        ctx.save(); ctx.beginPath(); ctx.arc(point.x, point.y, 1.8, 0, Math.PI * 2); ctx.fillStyle = "#d7f8ff"; ctx.shadowColor = "#52f6ad"; ctx.shadowBlur = 9; ctx.fill(); ctx.restore();
+      }
+
+      for (const planet of universe.planets) {
+        const screen = planetScreens.get(planet.id);
+        if (!screen || screen.radius <= 0 || screen.x + screen.radius < 0 || screen.x - screen.radius > width || screen.y + screen.radius < 0 || screen.y - screen.radius > height) {
+          if (!screen) continue;
+          const edgeX = clamp(screen.x, 22, width - 22);
+          const edgeY = clamp(screen.y, 22, height - 22);
+          ctx.save(); ctx.fillStyle = "rgba(192,225,240,.72)"; ctx.font = "9px JetBrains Mono"; ctx.textAlign = edgeX < width / 2 ? "left" : "right"; ctx.fillText(planet.name.toUpperCase(), edgeX, edgeY); ctx.restore();
+        }
+      }
+      void time;
+    };
+
     const draw = (time: number) => {
       frame = requestAnimationFrame(draw);
       if (!isVisible || document.hidden) return;
@@ -575,9 +725,44 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       const yaw = rotation + pointerX * 0.15;
       const pitch = -0.16 + pointerY * 0.08;
       cosineYaw = Math.cos(yaw); sineYaw = Math.sin(yaw); cosinePitch = Math.cos(pitch); sinePitch = Math.sin(pitch);
+      advanceUniverse(universe);
+      const storedById = new Map(universe.satellites.map((satellite) => [satellite.id, satellite]));
+      for (const satellite of knowledge) {
+        const stored = storedById.get(satellite.id);
+        if (stored) Object.assign(satellite, stored);
+      }
+      if ((universe.activeExpansion || universe.activeMigrations.length || universe.activeSignals.length) && time - lastUniverseSync > 800) {
+        persistUniverse(); syncUniverse(); lastUniverseSync = time;
+      }
       ctx.clearRect(0, 0, width, height);
-      drawBackgroundAura(time); drawOrbitRings(time); drawAtmosphere(time); drawKnowledge(time); drawGlobeShell(); drawGlobePoints(time); drawPackets(time); drawPulses(time); drawCore(time);
-      const activePoint = drawActiveSatellite(time);
+      centerX = width * .5; centerY = height * .45; radius = viewportRadius;
+      drawBackgroundAura(time);
+      placePlanets();
+      let activePoint: ScreenPoint | null = null;
+      const selectedId = universe.universe.selectedPlanetId ?? universe.universe.focusedPlanetId;
+      const visiblePlanets = universe.planets.map((planet) => ({ planet, screen: planetScreens.get(planet.id)! })).filter(({ screen }) => screen.radius > 0 && screen.x + screen.radius * 1.6 >= 0 && screen.x - screen.radius * 1.6 <= width && screen.y + screen.radius * 1.6 >= 0 && screen.y - screen.radius * 1.6 <= height).sort((a, b) => a.screen.z - b.screen.z);
+      for (const { planet, screen } of visiblePlanets) {
+        centerX = screen.x; centerY = screen.y; radius = screen.radius;
+        currentPlanetColor = PLANET_COLORS[universe.planets.indexOf(planet) % PLANET_COLORS.length];
+        const detail = planet.id === selectedId || radius >= 72 ? 0 : radius >= 42 ? 1 : 2;
+        if (detail < 2) drawOrbitRings(time);
+        if (detail === 0) drawAtmosphere(time);
+        drawGlobeShell();
+        if (detail < 2) drawGlobePoints(time);
+        drawKnowledge(time, planet.id, detail);
+        drawCore(time);
+        const point = drawActiveSatellite(time, planet.id);
+        if (point) { activePoint = point; drawPackets(time); }
+        if (planet.lifecycleState === "preparing-expansion") {
+          const pulse = 1 + Math.sin(time * .004) * .035;
+          ctx.beginPath(); ctx.arc(centerX, centerY, radius * 1.48 * pulse, 0, Math.PI * 2); ctx.strokeStyle = "rgba(255,172,92,.7)"; ctx.lineWidth = 1.2; ctx.stroke();
+        }
+        if (radius >= 30) {
+          ctx.save(); ctx.font = `${planet.id === selectedId ? 10 : 8}px JetBrains Mono`; ctx.textAlign = "center"; ctx.fillStyle = planet.id === selectedId ? "rgba(225,246,255,.9)" : "rgba(151,190,211,.68)"; ctx.fillText(planet.name.toUpperCase(), centerX, centerY + radius + 19); ctx.restore();
+        }
+      }
+      drawUniverseEffects(time);
+      drawPulses(time);
       updateHoverLabel(activePoint);
       updateTask(time);
       if (auto && !activeTask && !queue.length && time >= autoAt) {
@@ -590,39 +775,74 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     const move = (event: PointerEvent) => {
       const rect = stage.getBoundingClientRect();
       hoverX = event.clientX - rect.left; hoverY = event.clientY - rect.top;
+      if (dragging) {
+        const dx = event.clientX - dragX;
+        const dy = event.clientY - dragY;
+        dragMoved ||= Math.abs(dx) + Math.abs(dy) > 2;
+        if (dragButton === 0) cameraRotation += dx * .006;
+        else { cameraPanX += dx; cameraPanY += dy; }
+        dragX = event.clientX; dragY = event.clientY;
+        universe.camera.mode = "free-navigation";
+        return;
+      }
       targetPointerX = clamp(hoverX / rect.width * 2 - 1, -1, 1); targetPointerY = clamp(hoverY / rect.height * 2 - 1, -1, 1);
     };
     const leave = () => { targetPointerX = 0; targetPointerY = 0; hoverX = -1000; hoverY = -1000; };
+    const down = (event: PointerEvent) => { dragging = true; dragMoved = false; dragButton = event.button; dragX = event.clientX; dragY = event.clientY; stage.setPointerCapture(event.pointerId); };
+    const up = (event: PointerEvent) => {
+      dragging = false;
+      if (stage.hasPointerCapture(event.pointerId)) stage.releasePointerCapture(event.pointerId);
+      if (!dragMoved) {
+        const rect = stage.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        const selected = [...planetScreens.entries()].filter(([, screen]) => Math.hypot(screen.x - x, screen.y - y) <= Math.max(18, screen.radius)).sort((a, b) => a[1].z - b[1].z).at(-1)?.[0];
+        if (selected) { universe.universe.selectedPlanetId = selected; syncUniverse(); }
+      }
+      persistUniverse();
+    };
+    const wheel = (event: WheelEvent) => { event.preventDefault(); cameraZoom = clamp(cameraZoom * Math.exp(-event.deltaY * .001), .35, 4); universe.camera.mode = "free-navigation"; persistUniverse(); };
+    const focusSelected = () => { const id = universe.universe.selectedPlanetId; if (!id) return; universe.universe.focusedPlanetId = id; universe.camera.mode = "planet-focus"; cameraPanX = 0; cameraPanY = 0; cameraZoom = 1; persistUniverse(); syncUniverse(); };
+    const overview = () => { universe.camera.mode = "universe-overview"; cameraPanX = 0; cameraPanY = 0; cameraZoom = 1; persistUniverse(); syncUniverse(); };
+    const resetCamera = () => { cameraPanX = 0; cameraPanY = 0; cameraZoom = 1; cameraRotation = 0; universe.camera.mode = universe.planets.length > 1 ? "universe-overview" : "planet-focus"; persistUniverse(); syncUniverse(); };
+    const doubleClick = () => focusSelected();
+    const keydown = (event: KeyboardEvent) => { if (event.key === "Escape") overview(); else if (event.key === "Home") resetCamera(); else if (event.key === "+" || event.key === "=") cameraZoom = clamp(cameraZoom * 1.15, .35, 4); else if (event.key === "-") cameraZoom = clamp(cameraZoom / 1.15, .35, 4); else if (event.key === "ArrowLeft") cameraPanX += 24; else if (event.key === "ArrowRight") cameraPanX -= 24; else if (event.key === "ArrowUp") cameraPanY += 24; else if (event.key === "ArrowDown") cameraPanY -= 24; };
     const runManual = (event: Event) => { const taskKey = (event as CustomEvent<TaskKey>).detail; startTask(taskKey); };
     const toggleAuto = () => { auto = !auto; autoRef.current?.setAttribute("aria-pressed", String(auto)); if (auto && !activeTask) autoAt = performance.now() + 700; };
-    const clear = () => { knowledge.length = 0; assignedNames.clear(); packets.length = 0; pulses.length = 0; packetTotal = 0; persistSatellites(); syncSatellites(); if (knowledgeRef.current) knowledgeRef.current.textContent = "0"; if (packetRef.current) packetRef.current.textContent = "0"; };
+    const clear = () => { knowledge.length = 0; assignedNames.clear(); packets.length = 0; pulses.length = 0; packetTotal = 0; Object.assign(universe, createUniverse()); persistUniverse(); syncUniverse(); if (knowledgeRef.current) knowledgeRef.current.textContent = "0"; if (packetRef.current) packetRef.current.textContent = "0"; };
 
     const observer = new ResizeObserver(resize);
     const visibilityObserver = new IntersectionObserver(([entry]) => { isVisible = entry.isIntersecting; });
     observer.observe(stage);
     visibilityObserver.observe(stage);
     stage.addEventListener("pointermove", move);
+    stage.addEventListener("pointerdown", down);
+    stage.addEventListener("pointerup", up);
     stage.addEventListener("pointerleave", leave);
+    stage.addEventListener("wheel", wheel, { passive: false });
+    stage.addEventListener("dblclick", doubleClick);
     stage.addEventListener("living-task", runManual);
     stage.addEventListener("living-auto", toggleAuto);
     stage.addEventListener("living-clear", clear);
+    stage.addEventListener("living-overview", overview);
+    stage.addEventListener("living-focus", focusSelected);
+    stage.addEventListener("living-reset", resetCamera);
     window.addEventListener("resize", resize);
+    window.addEventListener("keydown", keydown);
     resize();
-    const initialSatellites = storedState ? storedSatellites : (["think", "search", "tool", "write", "verify", "search", "think", "tool"] as TaskKey[]).map((taskKey, index) => ({ taskKey, index }));
-    initialSatellites.forEach((entry, index) => {
-      const taskKey = entry.taskKey;
-      const stored = "naming" in entry ? entry : undefined;
-      const satellite = makeSatellite(taskKey, `bootstrap-${index + 1}`, stored?.color ?? TASKS[taskKey].color, false, stored);
+    storedSatellites.forEach((stored, index) => {
+      const taskKey = stored.taskKey;
+      const satellite = makeSatellite(taskKey, `bootstrap-${index + 1}`, stored.color, false, stored);
       satellite.createdAt -= index * 830; satellite.angle += index * 0.74; knowledge.push(satellite);
     });
-    if (!storedState) persistSatellites();
-    syncSatellites();
+    persistUniverse();
+    syncUniverse();
     if (knowledgeRef.current) knowledgeRef.current.textContent = String(knowledge.length);
     frame = requestAnimationFrame(draw);
     return () => {
-      cancelAnimationFrame(frame); observer.disconnect(); visibilityObserver.disconnect(); window.removeEventListener("resize", resize); stage.removeEventListener("pointermove", move); stage.removeEventListener("pointerleave", leave); stage.removeEventListener("living-task", runManual); stage.removeEventListener("living-auto", toggleAuto); stage.removeEventListener("living-clear", clear);
+      cancelAnimationFrame(frame); observer.disconnect(); visibilityObserver.disconnect(); window.removeEventListener("resize", resize); window.removeEventListener("keydown", keydown); stage.removeEventListener("pointermove", move); stage.removeEventListener("pointerdown", down); stage.removeEventListener("pointerup", up); stage.removeEventListener("pointerleave", leave); stage.removeEventListener("wheel", wheel); stage.removeEventListener("dblclick", doubleClick); stage.removeEventListener("living-task", runManual); stage.removeEventListener("living-auto", toggleAuto); stage.removeEventListener("living-clear", clear); stage.removeEventListener("living-overview", overview); stage.removeEventListener("living-focus", focusSelected); stage.removeEventListener("living-reset", resetCamera);
     };
-  }, [onSatellitesChange]);
+  }, [onSatellitesChange, onUniverseChange]);
 
   const dispatch = (name: string, detail?: TaskKey) => stageRef.current?.dispatchEvent(new CustomEvent(name, { detail }));
 
@@ -630,6 +850,11 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     <div ref={stageRef} className={`living-globe-runtime${SHOW_SIMULATOR_CONTROLS ? " has-controls" : ""}`}>
       <canvas ref={canvasRef} className="living-globe-canvas" aria-label="Animated Codex knowledge globe" />
       <div className="living-globe-scan" />
+      <nav className="living-universe-controls" aria-label="Universe navigation">
+        <button type="button" onClick={() => dispatch("living-overview")} title="Return to universe overview (Escape)">Overview</button>
+        <button type="button" onClick={() => dispatch("living-focus")} title="Focus selected planet">Focus</button>
+        <button type="button" onClick={() => dispatch("living-reset")} title="Reset camera (Home)">Reset</button>
+      </nav>
       <aside className="living-globe-hud living-globe-hud-left">
         <article style={{ "--card-color": "#37bfff" } as React.CSSProperties}><strong>Model</strong><span>{model}</span><small>reasoning core</small></article>
         <article style={{ "--card-color": "#5ecbff" } as React.CSSProperties}><strong>Context</strong><span>{context}</span><small>visual runtime</small></article>

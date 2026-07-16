@@ -2,6 +2,7 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { Activity, ChevronDown, ChevronUp, CircleDollarSign, Maximize2, Minimize2, Gauge, Zap } from "lucide-react";
 
 import { CodexGlobe, type SatelliteSummary } from "./codex-globe";
+import { UNIVERSE_CONFIG, type UniverseSummary } from "../universe";
 import type { DashboardOverview, RequestLog } from "../schemas";
 import { formatRequestSuccessRate } from "../utils";
 import { useLocalActivity, useLocalSessions, useLocalUsage } from "@/features/local-usage/hooks/use-local-usage";
@@ -16,6 +17,7 @@ function value(value: number | null | undefined) {
 
 export function LivingDashboard({ overview, requests }: { overview: DashboardOverview; requests: RequestLog[] }) {
   const [satellites, setSatellites] = useState<SatelliteSummary[]>([]);
+  const [universe, setUniverse] = useState<UniverseSummary | null>(null);
   const [activityOpen, setActivityOpen] = useState(true);
   const [globeExpanded, setGlobeExpanded] = useState(false);
   const localUsage = useLocalUsage("today").data;
@@ -51,7 +53,7 @@ export function LivingDashboard({ overview, requests }: { overview: DashboardOve
   return (
     <section className="living-dashboard" aria-label="Living Codex dashboard">
       <aside className="living-panel living-satellites">
-        <div className="living-panel-title">Satellites <span>{satellites.length}</span></div>
+        <div className="living-panel-title">Satellites <span>{satellites.length} across {universe?.planetCount ?? 1} {universe?.planetCount === 1 ? "planet" : "planets"}</span></div>
         <div className="living-satellite-list">
           {satellites.map((satellite) => (
             <div className="living-satellite" key={satellite.id} style={{ "--satellite-color": satellite.color } as CSSProperties}>
@@ -66,7 +68,24 @@ export function LivingDashboard({ overview, requests }: { overview: DashboardOve
       <div className={`living-panel living-core${globeExpanded ? " is-expanded" : ""}`}>
         <div className="living-panel-title">Living Codex <div className="living-panel-actions"><span>{latest ? "request telemetry" : "standing by"}</span><button type="button" aria-label={globeExpanded ? "Restore globe panel" : "Expand globe panel"} aria-pressed={globeExpanded} onClick={() => setGlobeExpanded((expanded) => !expanded)}>{globeExpanded ? <Minimize2 /> : <Maximize2 />}</button></div></div>
         <div className="living-globe-scene">
-          <CodexGlobe activity={recentTokens} eventId={latestEvent?.id} activityKind={latestEvent?.kind} eventLabel={latestEvent?.label} model={signals[0][1]} context={signals[2][1]} onSatellitesChange={setSatellites} />
+          <CodexGlobe activity={recentTokens} eventId={latestEvent?.id} activityKind={latestEvent?.kind} eventLabel={latestEvent?.label} model={signals[0][1]} context={signals[2][1]} onSatellitesChange={setSatellites} onUniverseChange={setUniverse} />
+          {universe ? <aside className="living-universe-summary" aria-live="polite">
+            <strong>Codex Universe</strong>
+            <span>{universe.planetCount} planets · {universe.satelliteCount} satellites</span>
+            <span>{universe.activeSignals} signals · {universe.activeMigrations} transfers</span>
+          </aside> : null}
+          {universe?.selectedPlanet ? <aside className="living-planet-inspector">
+            <strong>{universe.selectedPlanet.name}</strong>
+            <span>Generation {universe.selectedPlanet.generation} · {universe.selectedPopulation} satellites</span>
+            <span>Capacity {Math.round(universe.selectedPopulation / UNIVERSE_CONFIG.planetCapacity.expansionThreshold * 100)}% · maturity {Math.round(universe.selectedPlanet.maturity * 100)}%</span>
+            <span>{universe.selectedPlanet.lifecycleState} · {universe.selectedPlanet.totalTasksProcessed} tasks</span>
+            <span>{universe.selectedPlanet.totalSignalsSent} sent · {universe.selectedPlanet.totalSignalsReceived} received</span>
+          </aside> : null}
+          {universe?.expansion ? <aside className="living-expansion-status">
+            <strong>Planetary expansion</strong>
+            <span>{universe.expansion.phase} · {Math.round(universe.expansion.progress * 100)}%</span>
+            <span>{universe.activeMigrations} satellite transfers</span>
+          </aside> : null}
         </div>
       </div>
 

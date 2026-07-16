@@ -63,9 +63,21 @@ body:has(.living-core.is-expanded) { overflow: hidden; }
   mask-image: radial-gradient(circle at center, #000 8%, rgba(0,0,0,.8) 44%, transparent 87%);
 }
 .living-globe-scene::after { position: absolute; z-index: 8; inset: 0; background: radial-gradient(circle, transparent 30%, rgba(2,8,15,.1) 58%, rgba(2,8,15,.7)); content: ""; pointer-events: none; }
-.living-globe-canvas { position: absolute; z-index: 2; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+.living-globe-canvas { position: absolute; z-index: 2; inset: 0; width: 100%; height: 100%; cursor: grab; }
+.living-globe-canvas:active { cursor: grabbing; }
 
 .living-globe-runtime { position: absolute; z-index: 1; inset: 0; overflow: hidden; contain: strict; }
+.living-universe-controls { position: absolute; z-index: 16; top: 14px; left: 50%; display: flex; transform: translateX(-50%); border: 1px solid rgba(77,157,202,.24); border-radius: 7px; background: rgba(3,10,17,.88); }
+.living-universe-controls button { min-width: 70px; height: 30px; padding: 0 10px; border: 0; border-right: 1px solid rgba(77,157,202,.2); color: rgba(207,232,245,.78); background: transparent; font-size: 9px; cursor: pointer; }
+.living-universe-controls button:last-child { border-right: 0; }
+.living-universe-controls button:hover, .living-universe-controls button:focus-visible { color: #fff; background: rgba(55,215,255,.1); }
+.living-universe-controls button:focus-visible { outline: 1px solid #37d7ff; outline-offset: -2px; }
+.living-universe-summary, .living-planet-inspector, .living-expansion-status { position: absolute; z-index: 14; display: grid; gap: 4px; padding: 9px 11px; border: 1px solid rgba(77,157,202,.2); border-radius: 7px; color: rgba(176,207,223,.72); background: rgba(3,10,17,.82); font-family: "JetBrains Mono", monospace; font-size: 8px; pointer-events: none; }
+.living-universe-summary strong, .living-planet-inspector strong, .living-expansion-status strong { color: rgba(229,247,255,.9); font-size: 9px; text-transform: uppercase; }
+.living-universe-summary { top: 52px; left: 50%; transform: translateX(-50%); text-align: center; }
+.living-planet-inspector { bottom: 22px; left: 18px; min-width: 205px; }
+.living-expansion-status { top: 106px; left: 50%; min-width: 210px; transform: translateX(-50%); border-color: rgba(255,172,92,.4); text-align: center; }
+.living-expansion-status strong { color: #ffbd7f; }
 .living-globe-scan { position: absolute; z-index: 3; inset: 0 auto 0 0; width: 1px; background: linear-gradient(180deg, transparent, rgba(55,215,255,.22), transparent); box-shadow: 0 0 24px rgba(55,215,255,.2); animation: living-globe-scan 9s linear infinite; pointer-events: none; }
 .living-globe-hud { position: absolute; z-index: 10; top: 26px; bottom: 116px; display: flex; width: 198px; flex-direction: column; justify-content: space-between; pointer-events: none; }
 .living-globe-hud-left { left: 18px; }
@@ -151,6 +163,9 @@ body:has(.living-core.is-expanded) { overflow: hidden; }
   .living-globe-controls > div:last-child { position: absolute; top: -48px; right: 0; }
   .living-globe-controls small { display: none; }
   .living-globe-progress { bottom: 88px; }
+  .living-universe-summary, .living-planet-inspector { display: none; }
+  .living-universe-controls { top: 10px; }
+  .living-expansion-status { top: 52px; }
   .living-feed-rows > div { grid-template-columns: 62px 1fr auto; }
   .living-feed-rows em { display: none; }
 }

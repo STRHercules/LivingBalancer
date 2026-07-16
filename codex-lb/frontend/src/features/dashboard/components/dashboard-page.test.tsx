@@ -76,6 +76,10 @@ vi.mock("@/features/dashboard/components/dashboard-skeleton", () => ({
   DashboardSkeleton: () => <div data-testid="dashboard-skeleton" />,
 }));
 
+vi.mock("@/features/dashboard/components/living-dashboard", () => ({
+  LivingDashboard: () => <div data-testid="living-dashboard" />,
+}));
+
 vi.mock("@/features/dashboard/components/filters/overview-timeframe-select", () => ({
   OverviewTimeframeSelect: () => <div data-testid="overview-timeframe-select" />,
 }));
