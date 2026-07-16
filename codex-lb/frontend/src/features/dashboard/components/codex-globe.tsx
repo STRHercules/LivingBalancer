@@ -776,6 +776,8 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       const rect = stage.getBoundingClientRect();
       hoverX = event.clientX - rect.left; hoverY = event.clientY - rect.top;
       if (dragging) {
+        event.preventDefault();
+        event.stopPropagation();
         const dx = event.clientX - dragX;
         const dy = event.clientY - dragY;
         dragMoved ||= Math.abs(dx) + Math.abs(dy) > 2;
@@ -788,8 +790,18 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       targetPointerX = clamp(hoverX / rect.width * 2 - 1, -1, 1); targetPointerY = clamp(hoverY / rect.height * 2 - 1, -1, 1);
     };
     const leave = () => { targetPointerX = 0; targetPointerY = 0; hoverX = -1000; hoverY = -1000; };
-    const down = (event: PointerEvent) => { dragging = true; dragMoved = false; dragButton = event.button; dragX = event.clientX; dragY = event.clientY; stage.setPointerCapture(event.pointerId); };
+    const down = (event: PointerEvent) => {
+      if (event.button < 0 || event.button > 2) return;
+      if (event.target instanceof Element && event.target.closest("button")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      stage.focus({ preventScroll: true });
+      dragging = true; dragMoved = false; dragButton = event.button; dragX = event.clientX; dragY = event.clientY; stage.setPointerCapture(event.pointerId);
+    };
     const up = (event: PointerEvent) => {
+      if (!dragging) return;
+      event.preventDefault();
+      event.stopPropagation();
       dragging = false;
       if (stage.hasPointerCapture(event.pointerId)) stage.releasePointerCapture(event.pointerId);
       if (!dragMoved) {
@@ -801,12 +813,17 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       }
       persistUniverse();
     };
-    const wheel = (event: WheelEvent) => { event.preventDefault(); cameraZoom = clamp(cameraZoom * Math.exp(-event.deltaY * .001), .35, 4); universe.camera.mode = "free-navigation"; persistUniverse(); };
+    const blockNativeMouse = (event: MouseEvent) => { event.preventDefault(); event.stopPropagation(); };
+    const wheel = (event: WheelEvent) => { event.preventDefault(); event.stopPropagation(); cameraZoom = clamp(cameraZoom * Math.exp(-event.deltaY * .001), .35, 4); universe.camera.mode = "free-navigation"; persistUniverse(); };
     const focusSelected = () => { const id = universe.universe.selectedPlanetId; if (!id) return; universe.universe.focusedPlanetId = id; universe.camera.mode = "planet-focus"; cameraPanX = 0; cameraPanY = 0; cameraZoom = 1; persistUniverse(); syncUniverse(); };
     const overview = () => { universe.camera.mode = "universe-overview"; cameraPanX = 0; cameraPanY = 0; cameraZoom = 1; persistUniverse(); syncUniverse(); };
     const resetCamera = () => { cameraPanX = 0; cameraPanY = 0; cameraZoom = 1; cameraRotation = 0; universe.camera.mode = universe.planets.length > 1 ? "universe-overview" : "planet-focus"; persistUniverse(); syncUniverse(); };
     const doubleClick = () => focusSelected();
-    const keydown = (event: KeyboardEvent) => { if (event.key === "Escape") overview(); else if (event.key === "Home") resetCamera(); else if (event.key === "+" || event.key === "=") cameraZoom = clamp(cameraZoom * 1.15, .35, 4); else if (event.key === "-") cameraZoom = clamp(cameraZoom / 1.15, .35, 4); else if (event.key === "ArrowLeft") cameraPanX += 24; else if (event.key === "ArrowRight") cameraPanX -= 24; else if (event.key === "ArrowUp") cameraPanY += 24; else if (event.key === "ArrowDown") cameraPanY -= 24; };
+    const keydown = (event: KeyboardEvent) => {
+      let handled = true;
+      if (event.key === "Escape") overview(); else if (event.key === "Home") resetCamera(); else if (event.key === "+" || event.key === "=") cameraZoom = clamp(cameraZoom * 1.15, .35, 4); else if (event.key === "-") cameraZoom = clamp(cameraZoom / 1.15, .35, 4); else if (event.key === "ArrowLeft") cameraPanX += 24; else if (event.key === "ArrowRight") cameraPanX -= 24; else if (event.key === "ArrowUp") cameraPanY += 24; else if (event.key === "ArrowDown") cameraPanY -= 24; else handled = false;
+      if (handled) { event.preventDefault(); event.stopPropagation(); }
+    };
     const runManual = (event: Event) => { const taskKey = (event as CustomEvent<TaskKey>).detail; startTask(taskKey); };
     const toggleAuto = () => { auto = !auto; autoRef.current?.setAttribute("aria-pressed", String(auto)); if (auto && !activeTask) autoAt = performance.now() + 700; };
     const clear = () => { knowledge.length = 0; assignedNames.clear(); packets.length = 0; pulses.length = 0; packetTotal = 0; Object.assign(universe, createUniverse()); persistUniverse(); syncUniverse(); if (knowledgeRef.current) knowledgeRef.current.textContent = "0"; if (packetRef.current) packetRef.current.textContent = "0"; };
@@ -820,6 +837,9 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     stage.addEventListener("pointerup", up);
     stage.addEventListener("pointerleave", leave);
     stage.addEventListener("wheel", wheel, { passive: false });
+    stage.addEventListener("contextmenu", blockNativeMouse);
+    stage.addEventListener("auxclick", blockNativeMouse);
+    stage.addEventListener("keydown", keydown);
     stage.addEventListener("dblclick", doubleClick);
     stage.addEventListener("living-task", runManual);
     stage.addEventListener("living-auto", toggleAuto);
@@ -828,7 +848,6 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     stage.addEventListener("living-focus", focusSelected);
     stage.addEventListener("living-reset", resetCamera);
     window.addEventListener("resize", resize);
-    window.addEventListener("keydown", keydown);
     resize();
     storedSatellites.forEach((stored, index) => {
       const taskKey = stored.taskKey;
@@ -840,14 +859,14 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     if (knowledgeRef.current) knowledgeRef.current.textContent = String(knowledge.length);
     frame = requestAnimationFrame(draw);
     return () => {
-      cancelAnimationFrame(frame); observer.disconnect(); visibilityObserver.disconnect(); window.removeEventListener("resize", resize); window.removeEventListener("keydown", keydown); stage.removeEventListener("pointermove", move); stage.removeEventListener("pointerdown", down); stage.removeEventListener("pointerup", up); stage.removeEventListener("pointerleave", leave); stage.removeEventListener("wheel", wheel); stage.removeEventListener("dblclick", doubleClick); stage.removeEventListener("living-task", runManual); stage.removeEventListener("living-auto", toggleAuto); stage.removeEventListener("living-clear", clear); stage.removeEventListener("living-overview", overview); stage.removeEventListener("living-focus", focusSelected); stage.removeEventListener("living-reset", resetCamera);
+      cancelAnimationFrame(frame); observer.disconnect(); visibilityObserver.disconnect(); window.removeEventListener("resize", resize); stage.removeEventListener("pointermove", move); stage.removeEventListener("pointerdown", down); stage.removeEventListener("pointerup", up); stage.removeEventListener("pointerleave", leave); stage.removeEventListener("wheel", wheel); stage.removeEventListener("contextmenu", blockNativeMouse); stage.removeEventListener("auxclick", blockNativeMouse); stage.removeEventListener("keydown", keydown); stage.removeEventListener("dblclick", doubleClick); stage.removeEventListener("living-task", runManual); stage.removeEventListener("living-auto", toggleAuto); stage.removeEventListener("living-clear", clear); stage.removeEventListener("living-overview", overview); stage.removeEventListener("living-focus", focusSelected); stage.removeEventListener("living-reset", resetCamera);
     };
   }, [onSatellitesChange, onUniverseChange]);
 
   const dispatch = (name: string, detail?: TaskKey) => stageRef.current?.dispatchEvent(new CustomEvent(name, { detail }));
 
   return (
-    <div ref={stageRef} className={`living-globe-runtime${SHOW_SIMULATOR_CONTROLS ? " has-controls" : ""}`}>
+    <div ref={stageRef} className={`living-globe-runtime${SHOW_SIMULATOR_CONTROLS ? " has-controls" : ""}`} tabIndex={0}>
       <canvas ref={canvasRef} className="living-globe-canvas" aria-label="Animated Codex knowledge globe" />
       <div className="living-globe-scan" />
       <nav className="living-universe-controls" aria-label="Universe navigation">

@@ -66,7 +66,8 @@ body:has(.living-core.is-expanded) { overflow: hidden; }
 .living-globe-canvas { position: absolute; z-index: 2; inset: 0; width: 100%; height: 100%; cursor: grab; }
 .living-globe-canvas:active { cursor: grabbing; }
 
-.living-globe-runtime { position: absolute; z-index: 1; inset: 0; overflow: hidden; contain: strict; }
+.living-globe-runtime { position: absolute; z-index: 1; inset: 0; overflow: hidden; contain: strict; overscroll-behavior: contain; touch-action: none; user-select: none; }
+.living-globe-runtime:focus-visible { outline: 1px solid rgba(55,215,255,.7); outline-offset: -1px; }
 .living-universe-controls { position: absolute; z-index: 16; top: 14px; left: 50%; display: flex; transform: translateX(-50%); border: 1px solid rgba(77,157,202,.24); border-radius: 7px; background: rgba(3,10,17,.88); }
 .living-universe-controls button { min-width: 70px; height: 30px; padding: 0 10px; border: 0; border-right: 1px solid rgba(77,157,202,.2); color: rgba(207,232,245,.78); background: transparent; font-size: 9px; cursor: pointer; }
 .living-universe-controls button:last-child { border-right: 0; }
