@@ -14,6 +14,7 @@ import { AdvancedSettingsGroup } from "@/features/settings/components/advanced-s
 import { AppearanceSettings } from "@/features/settings/components/appearance-settings";
 import { GuestAccessSettings } from "@/features/settings/components/guest-access-settings";
 import { ImportSettings } from "@/features/settings/components/import-settings";
+import { LivingCodexDataSettings } from "@/features/settings/components/living-codex-data-settings";
 import { PasswordSettings } from "@/features/settings/components/password-settings";
 import { RoutingSettings } from "@/features/settings/components/routing-settings";
 import { SessionSettings } from "@/features/settings/components/session-settings";
@@ -102,6 +103,7 @@ export function SettingsPage() {
 
           <div className="space-y-4">
             <AppearanceSettings />
+            <LivingCodexDataSettings />
             <ImportSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
             {canWrite ? (
               <GuestAccessSettings

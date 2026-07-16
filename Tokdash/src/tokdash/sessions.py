@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -200,6 +201,16 @@ def _project_from_repo_or_path(repo_url: Optional[str], path: Optional[str]) -> 
     return "unknown"
 
 
+def _project_identity(repo_url: Optional[str], path: Optional[str]) -> str:
+    identity = str(repo_url or "").strip().lower()
+    if not identity and path:
+        candidate = os.path.normcase(os.path.abspath(os.path.expanduser(path)))
+        home = os.path.normcase(os.path.abspath(str(Path.home())))
+        if candidate != home:
+            identity = candidate
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20] if identity else ""
+
+
 def _build_turn(
     turn_index: int,
     timestamp_ms: int,
@@ -265,6 +276,7 @@ def _summarize_session(
         "display_name": raw.get("display_name")
         or _fallback_display_name(raw.get("session_id", "unknown"), raw.get("project", "unknown")),
         "project": raw.get("project", "unknown"),
+        "project_id": raw.get("project_id") or None,
         "is_review_session": bool(raw.get("is_review_session", False)),
         "model": top_model,
         "token_events": len(turns),
@@ -298,6 +310,7 @@ def _merge_raw_session(existing: Dict[str, Any], new: Dict[str, Any]) -> Dict[st
         "tool": existing.get("tool") or new.get("tool") or "unknown",
         "session_id": existing.get("session_id") or new.get("session_id") or "unknown",
         "project": existing.get("project") if existing.get("project") != "unknown" else new.get("project", "unknown"),
+        "project_id": existing.get("project_id") or new.get("project_id") or None,
         "display_name": existing.get("display_name") or new.get("display_name") or "",
         "is_review_session": bool(existing.get("is_review_session") or new.get("is_review_session")),
         "turns": [],
@@ -548,6 +561,7 @@ def _parse_codex_session_file(path_str: str, _mtime_ns: int, _size: int, _pricin
         "session_id": session_id,
         "display_name": thread_name or _fallback_display_name(session_id, project),
         "project": project,
+        "project_id": _project_identity(repo_url or None, cwd or None) or None,
         "is_review_session": is_review_session,
         "turns": turns,
     }

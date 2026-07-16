@@ -13,6 +13,8 @@ _RELEVANT_EVENT_MARKERS = (
     b'"patch_apply_end"',
     b'"custom_tool_call"',
 )
+_ACTIVE_WINDOW = timedelta(minutes=5)
+_MAX_ACTIVE_SESSIONS = 8
 
 
 def _classify(row_type: str, payload: dict[str, Any]) -> tuple[str, str] | None:
@@ -40,10 +42,9 @@ def _classify(row_type: str, payload: dict[str, Any]) -> tuple[str, str] | None:
     return "tool", f"Using {payload.get('name') or 'a tool'}"
 
 
-def _latest_rollout() -> Path | None:
+def _recent_rollouts() -> list[Path]:
     from tokdash.clientpaths import codex_sessions_dir
 
-    # ponytail: follow the newest local task only; aggregate rollouts if concurrent-task visualization matters.
     root = codex_sessions_dir()
     today = datetime.now()
     candidates = [
@@ -51,7 +52,15 @@ def _latest_rollout() -> Path | None:
         for date in (today, today - timedelta(days=1))
         for path in (root / f"{date:%Y/%m/%d}").glob("rollout-*.jsonl")
     ]
-    return max(candidates, key=lambda path: path.stat().st_mtime, default=None)
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    if not candidates:
+        return []
+    cutoff = today.timestamp() - _ACTIVE_WINDOW.total_seconds()
+    return [
+        path
+        for path in candidates[:_MAX_ACTIVE_SESSIONS]
+        if path == candidates[0] or path.stat().st_mtime >= cutoff
+    ]
 
 
 def _tail_lines(path: Path, limit: int) -> list[bytes]:
@@ -67,11 +76,7 @@ def _tail_lines(path: Path, limit: int) -> list[bytes]:
     return buffer.splitlines()[-limit:]
 
 
-def recent_activity(limit: int = 16) -> dict[str, Any]:
-    path = _latest_rollout()
-    if path is None:
-        return {"session_id": None, "state": "idle", "events": []}
-
+def _rollout_activity(path: Path, limit: int) -> dict[str, Any]:
     events: list[dict[str, Any]] = []
     for index, line in enumerate(_tail_lines(path, max(64, limit * 4))):
         # Tool results can be megabytes; reject irrelevant rows before JSON decoding.
@@ -86,7 +91,10 @@ def recent_activity(limit: int = 16) -> dict[str, Any]:
         if classified:
             kind, label = classified
             events.append({
-                "id": f"{row.get('timestamp', '')}-{payload.get('type', '')}-{payload.get('call_id') or payload.get('turn_id') or index}",
+                "id": (
+                    f"{row.get('timestamp', '')}-{payload.get('type', '')}-"
+                    f"{payload.get('call_id') or payload.get('turn_id') or index}"
+                ),
                 "kind": kind,
                 "label": label,
                 "timestamp": row.get("timestamp"),
@@ -98,11 +106,30 @@ def recent_activity(limit: int = 16) -> dict[str, Any]:
     return {"session_id": path.stem[-36:], "state": state, "events": visible}
 
 
+def recent_activity(limit: int = 16) -> dict[str, Any]:
+    rollouts = _recent_rollouts()
+    if not rollouts:
+        return {"session_id": None, "state": "idle", "events": [], "sessions": []}
+
+    sessions = [_rollout_activity(path, limit) for path in rollouts]
+    sessions = [
+        session
+        for index, session in enumerate(sessions)
+        if session["events"] and (index == 0 or session["state"] != "idle")
+    ]
+    if not sessions:
+        return {"session_id": None, "state": "idle", "events": [], "sessions": []}
+    return {**sessions[0], "sessions": sessions}
+
+
 if __name__ == "__main__":
     import tempfile
 
     assert _classify("event_msg", {"type": "agent_reasoning"}) == ("thinking", "Analyzing the current task")
-    assert _classify("response_item", {"type": "custom_tool_call", "input": "search_query"}) == ("search", "Searching the web")
+    assert _classify("response_item", {"type": "custom_tool_call", "input": "search_query"}) == (
+        "search",
+        "Searching the web",
+    )
     with tempfile.TemporaryDirectory() as directory:
         sample = Path(directory) / "events.jsonl"
         sample.write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")

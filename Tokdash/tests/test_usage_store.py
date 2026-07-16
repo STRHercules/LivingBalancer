@@ -810,7 +810,13 @@ def test_session_display_name_fallbacks(monkeypatch, tmp_path):
     stat = codex_file.stat()
     codex_raw = sessions_module._parse_codex_session_file(str(codex_file), stat.st_mtime_ns, stat.st_size, ())
     assert codex_raw["display_name"] == "Fix busy refresh"
+    assert codex_raw["project_id"]
     assert sessions_module._summarize_session(codex_raw)["display_name"] == "Fix busy refresh"
+    assert sessions_module._summarize_session(codex_raw)["project_id"] == codex_raw["project_id"]
+    assert sessions_module._project_identity(None, str(Path.home())) == ""
+    assert sessions_module._project_identity(
+        "https://example.test/repo.git", "/work/a"
+    ) == sessions_module._project_identity("https://example.test/repo.git", "/work/b")
 
     codex_context_file = tmp_path / "codex-context.jsonl"
     _write_jsonl(

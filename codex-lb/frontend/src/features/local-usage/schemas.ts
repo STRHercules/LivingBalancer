@@ -39,6 +39,7 @@ export const LocalSessionSchema = z.looseObject({
   session_id: z.string(),
   display_name: z.string().optional(),
   project: z.string().default("unknown"),
+  project_id: z.string().nullable().optional(),
   model: z.string().default("unknown"),
   token_events: z.number().default(0),
   tokens_in: z.number().default(0),
@@ -108,15 +109,24 @@ export const LocalQuotaSchema = z.looseObject({
   })).default({}),
 });
 
+const LocalActivityEventSchema = z.looseObject({
+  id: z.string(),
+  kind: z.enum(["thinking", "workflow", "tool", "search"]),
+  label: z.string(),
+  timestamp: z.string().nullable().optional(),
+});
+
+const LocalActivitySessionSchema = z.looseObject({
+  session_id: z.string(),
+  state: z.enum(["idle", "thinking", "workflow", "tool", "search"]).default("idle"),
+  events: z.array(LocalActivityEventSchema).default([]),
+});
+
 export const LocalActivitySchema = z.looseObject({
   session_id: z.string().nullable(),
   state: z.enum(["idle", "thinking", "workflow", "tool", "search"]).default("idle"),
-  events: z.array(z.looseObject({
-    id: z.string(),
-    kind: z.enum(["thinking", "workflow", "tool", "search"]),
-    label: z.string(),
-    timestamp: z.string().nullable().optional(),
-  })).default([]),
+  events: z.array(LocalActivityEventSchema).default([]),
+  sessions: z.array(LocalActivitySessionSchema).default([]),
 });
 
 export type LocalUsage = z.infer<typeof LocalUsageSchema>;
