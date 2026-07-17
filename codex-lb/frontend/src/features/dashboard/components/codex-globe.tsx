@@ -168,6 +168,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     const renderedGlobePoints: RenderedGlobePoint[] = [];
     const atmosphereDust: Dust[] = [];
     const renderedAtmosphereDust: RenderedDust[] = [];
+    const landscapeLightSprites = new Map<string, { image: HTMLCanvasElement; center: number }>();
     const knowledge: Satellite[] = [];
     const packets: Packet[] = [];
     const pulses: Pulse[] = [];
@@ -513,10 +514,36 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         const source = point.source;
         const front = clamp((point.z + 1) / 2, 0, 1);
         const color = source.warm ? "#ffb160" : currentPlanetColor;
-        ctx.globalAlpha = point.alpha; ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = point.size > 1.2 && front > 0.45 ? 6 + point.size * 2 : 0;
-        ctx.beginPath(); ctx.arc(centerX + point.x * radius * point.perspective, centerY + point.y * radius * point.perspective, Math.max(0.35, point.size), 0, Math.PI * 2); ctx.fill();
+        const x = centerX + point.x * radius * point.perspective;
+        const y = centerY + point.y * radius * point.perspective;
+        const size = Math.max(0.35, point.size);
+        const blur = point.size > 1.2 && front > 0.45 ? Math.round(6 + point.size * 2) : 0;
+        ctx.globalAlpha = point.alpha;
+        if (!blur) {
+          ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, y, size, 0, Math.PI * 2); ctx.fill();
+          continue;
+        }
+        const sizeKey = Math.round(size * 4);
+        const scale = clamp(devicePixelRatio || 1, 1, 2);
+        const key = `${color}:${sizeKey}:${blur}:${scale}`;
+        let sprite = landscapeLightSprites.get(key);
+        if (!sprite) {
+          const dotSize = sizeKey / 4;
+          const center = Math.ceil(dotSize + blur * 1.5 + 2);
+          const image = document.createElement("canvas");
+          image.width = image.height = Math.ceil(center * 2 * scale);
+          const spriteContext = image.getContext("2d");
+          if (spriteContext) {
+            spriteContext.setTransform(scale, 0, 0, scale, 0, 0);
+            spriteContext.fillStyle = color; spriteContext.shadowColor = color; spriteContext.shadowBlur = blur;
+            spriteContext.beginPath(); spriteContext.arc(center, center, dotSize, 0, Math.PI * 2); spriteContext.fill();
+          }
+          sprite = { image, center };
+          landscapeLightSprites.set(key, sprite);
+        }
+        ctx.drawImage(sprite.image, x - sprite.center, y - sprite.center, sprite.center * 2, sprite.center * 2);
       }
-      ctx.restore(); ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+      ctx.restore(); ctx.globalAlpha = 1;
     };
 
     const drawCore = (time: number) => {
