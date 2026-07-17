@@ -1,8 +1,11 @@
 # LivingBalancer
 
-<video src="./Media/VideoDemo.mp4" controls width="100%">
-  Your browser does not support the video element.
-</video>
+
+## Video Demo
+
+https://github.com/user-attachments/assets/99bc8953-72a9-458c-87fd-ef45df25d400
+
+--- 
 
 LivingBalancer is a local-first extension of [CodexLB](./codex-lb/README.md) that keeps its account, request, API, report, settings, and automation controls while adding two integrated views of local Codex work:
 
