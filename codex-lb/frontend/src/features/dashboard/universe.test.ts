@@ -145,6 +145,38 @@ describe("living project universe", () => {
     assertUniverseIntegrity(state);
   });
 
+  it("repairs planets into varied, coplanar, collision-safe orbits", () => {
+    const state = createUniverse([], 0);
+    const system = state.starSystems[0];
+    const first = state.planets[0];
+    for (let index = 1; index < 20; index += 1) state.planets.push({ ...structuredClone(first), id: `unsafe_${index}`, name: `Unsafe ${index}`, radius: 1, orbit: { ...first.orbit, band: index, radius: first.orbit.radius + index * .1, inclination: index } });
+
+    const repaired = restoreUniverse(structuredClone(state), 1)!;
+    const planets = repaired.planets.filter(({ starSystemId }) => starSystemId === system.id).sort((a, b) => a.orbit.radius - b.orbit.radius);
+    expect(new Set(planets.map(({ radius }) => radius.toFixed(4))).size).toBeGreaterThan(1);
+    expect(new Set(planets.map(({ orbit }) => orbit.inclination)).size).toBe(1);
+    expect(new Set(planets.map(({ hasRings }) => hasRings))).toEqual(new Set([true, false]));
+    expect(planets.some(({ moonCount }) => moonCount === 0)).toBe(true);
+    expect(planets.some(({ moonCount }) => moonCount > 0)).toBe(true);
+    for (let index = 1; index < planets.length; index += 1) {
+      const inner = planets[index - 1];
+      const outer = planets[index];
+      expect(outer.orbit.radius - inner.orbit.radius - inner.radius - outer.radius).toBeGreaterThanOrEqual(UNIVERSE_CONFIG.planetOrbits.minimumSurfaceClearance);
+    }
+  });
+
+  it("moves growing star systems far enough apart to contain their planets", () => {
+    const state = createUniverse([], 0);
+    for (const [offset, path] of [[0, "C:/one"], [10, "C:/two"]] as const) for (let index = 1; index <= 3; index += 1) addSatellite(state, makeSatellite(offset + index), project(path), offset + index);
+    const restored = restoreUniverse(structuredClone(state), 10)!;
+    for (let index = 0; index < restored.starSystems.length; index += 1) for (let candidate = index + 1; candidate < restored.starSystems.length; candidate += 1) {
+      const first = restored.starSystems[index];
+      const second = restored.starSystems[candidate];
+      const extent = (systemId: string) => Math.max(...restored.planets.filter(({ starSystemId }) => starSystemId === systemId).map((planet) => planet.orbit.radius + planet.radius * 2.2));
+      expect(Math.hypot(first.position.x - second.position.x, first.position.z - second.position.z)).toBeGreaterThanOrEqual(extent(first.id) + extent(second.id) + UNIVERSE_CONFIG.systemPlacement.safetyMargin);
+    }
+  });
+
   it("separates local and explicitly triggered cross-system signals", () => {
     const state = createUniverse([], 0);
     for (const [offset, path] of [[0, "C:/one"], [10, "C:/two"]] as const) {

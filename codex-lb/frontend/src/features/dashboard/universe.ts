@@ -49,6 +49,8 @@ export type Planet = {
   childPlanetIds: string[];
   position: Point3D;
   radius: number;
+  hasRings: boolean;
+  moonCount: number;
   maturity: number;
   lifecycleState: PlanetState;
   createdAt: string;
@@ -185,7 +187,7 @@ export const UNIVERSE_CONFIG = {
   camera: { minimumPlanetScreenSize: 24, overviewPadding: 1.25 },
   starSystems: { enabled: true, coreSystemName: "Codex Core", minimumActivitiesToMaterialize: 1, formationDurationMs: 5_000, dormantAfterDays: 30, maximumIdentityAliases: 8, maximumVisibleSystemLabels: 24, autoFollowActiveProject: false },
   systemPlacement: { baseSpacing: 18, ringSpacing: 14, verticalVariance: 4, safetyMargin: 6, layout: "seeded-spiral" },
-  planetOrbits: { baseRadius: 3.4, bandSpacing: 2.4, verticalAmplitude: 0.35, minimumSpeed: 0.008, maximumSpeed: 0.024 },
+  planetOrbits: { baseRadius: 3.4, bandSpacing: 2.4, minimumSurfaceClearance: 1, spacingVariance: .9, minimumPlanetRadius: .62, maximumPlanetRadius: 1.7, minimumSpeed: 0.008, maximumSpeed: 0.024 },
   crossSystemCommunication: { enabled: true, maximumConcurrentSignals: 24, idleTrafficEnabled: false },
 } as const;
 
@@ -204,6 +206,35 @@ function hash(value: string) {
   let result = 2166136261;
   for (let index = 0; index < value.length; index += 1) result = Math.imul(result ^ value.charCodeAt(index), 16777619);
   return (result >>> 0).toString(16).padStart(8, "0");
+}
+
+const hashUnit = (value: string) => Number.parseInt(hash(value), 16) / 0xffffffff;
+
+function planetRadiusForBand(systemId: string, band: number) {
+  const { minimumPlanetRadius, maximumPlanetRadius } = UNIVERSE_CONFIG.planetOrbits;
+  return minimumPlanetRadius + hashUnit(`${systemId}:planet-size:${band}`) ** 1.8 * (maximumPlanetRadius - minimumPlanetRadius);
+}
+
+function planetTraitsForBand(systemId: string, band: number) {
+  const radius = planetRadiusForBand(systemId, band);
+  const config = UNIVERSE_CONFIG.planetOrbits;
+  const relativeSize = (radius - config.minimumPlanetRadius) / (config.maximumPlanetRadius - config.minimumPlanetRadius);
+  const moonRoll = hashUnit(`${systemId}:moons:${band}`);
+  return {
+    radius,
+    hasRings: hashUnit(`${systemId}:rings:${band}`) < .12 + relativeSize * .32,
+    moonCount: moonRoll > .25 + relativeSize * .5 ? 0 : 1 + Math.floor(hashUnit(`${systemId}:moon-count:${band}`) * (relativeSize > .65 ? 3 : 2)),
+  };
+}
+
+function orbitRadiusForBand(systemId: string, band: number) {
+  const config = UNIVERSE_CONFIG.planetOrbits;
+  let radius = config.baseRadius;
+  for (let index = 1; index <= band; index += 1) {
+    const safeGap = planetRadiusForBand(systemId, index - 1) + planetRadiusForBand(systemId, index) + config.minimumSurfaceClearance;
+    radius += Math.max(config.bandSpacing, safeGap) + hashUnit(`${systemId}:orbit-gap:${index}`) * config.spacingVariance;
+  }
+  return radius;
 }
 
 function normalizePath(value: string) {
@@ -249,6 +280,31 @@ function systemPosition(index: number): Point3D {
   return { x: Math.cos(index * GOLDEN_ANGLE) * distance, y: Math.sin(index * 4.17) * UNIVERSE_CONFIG.systemPlacement.verticalVariance, z: Math.sin(index * GOLDEN_ANGLE) * distance };
 }
 
+export function starSystemExtent(state: UniverseState, systemId: string) {
+  return Math.max(1, ...state.planets.filter((planet) => planet.starSystemId === systemId).map((planet) => planet.orbit.radius + planet.radius * 2.2));
+}
+
+function relayoutStarSystems(state: UniverseState) {
+  const placed: Array<{ position: Point3D; extent: number }> = [];
+  const config = UNIVERSE_CONFIG.systemPlacement;
+  // ponytail: radial packing is intentionally simple while the universe is capped at 50 visible systems.
+  state.starSystems.forEach((system, index) => {
+    const extent = starSystemExtent(state, system.id);
+    let position = systemPosition(index);
+    if (index) {
+      const angle = index * GOLDEN_ANGLE;
+      let distance = Math.hypot(position.x, position.z);
+      while (placed.some((other) => Math.hypot(position.x - other.position.x, position.z - other.position.z) < extent + other.extent + config.safetyMargin)) {
+        distance += Math.max(2, config.safetyMargin * .5);
+        position = { x: Math.cos(angle) * distance, y: position.y, z: Math.sin(angle) * distance };
+      }
+    }
+    system.position = position;
+    for (const planet of state.planets) if (planet.starSystemId === system.id) planet.position = position;
+    placed.push({ position, extent });
+  });
+}
+
 function makeCore(now: number): StarSystem {
   return { id: CORE_SYSTEM_ID, projectKey: "codex:core", identitySource: "core", identityAliases: [], displayName: UNIVERSE_CONFIG.starSystems.coreSystemName, lifecycleState: "stable", visualFlags: [], position: systemPosition(0), radius: .32, color: SYSTEM_COLORS[0], intensity: .85, maturity: 1, planetIds: [], pendingActivityCount: 0, createdAt: iso(now), lastActiveAt: iso(now), totalTasksProcessed: 0, totalSignalsSent: 0, totalSignalsReceived: 0, totalCrossSystemSignals: 0 };
 }
@@ -258,8 +314,8 @@ function makeOrbit(systemPlanetIndex: number, planetId: string, systemId: string
   const band = systemPlanetIndex;
   return {
     band,
-    radius: UNIVERSE_CONFIG.planetOrbits.baseRadius + band * UNIVERSE_CONFIG.planetOrbits.bandSpacing,
-    inclination: ((seed % 1_000) / 1_000 - .5) * .28,
+    radius: orbitRadiusForBand(systemId, band),
+    inclination: (hashUnit(`${systemId}:orbital-plane`) - .5) * .28,
     phase: (seed % 6_283) / 1_000,
     speed: UNIVERSE_CONFIG.planetOrbits.minimumSpeed + (seed % 1_000) / 1_000 * (UNIVERSE_CONFIG.planetOrbits.maximumSpeed - UNIVERSE_CONFIG.planetOrbits.minimumSpeed),
     direction: seed % 2 ? 1 : -1,
@@ -269,6 +325,7 @@ function makeOrbit(systemPlanetIndex: number, planetId: string, systemId: string
 function makePlanet(index: number, parent: Planet | null, system: StarSystem, now: number): Planet {
   const id = `planet_${String(index + 1).padStart(4, "0")}`;
   const systemPlanetIndex = system.planetIds.length;
+  const traits = planetTraitsForBand(system.id, systemPlanetIndex);
   return {
     id,
     starSystemId: system.id,
@@ -278,7 +335,7 @@ function makePlanet(index: number, parent: Planet | null, system: StarSystem, no
     parentPlanetId: parent?.id ?? null,
     childPlanetIds: [],
     position: system.position,
-    radius: 1,
+    ...traits,
     maturity: index ? .16 : 1,
     lifecycleState: index ? "forming" : "stable",
     createdAt: iso(now),
@@ -290,7 +347,7 @@ function makePlanet(index: number, parent: Planet | null, system: StarSystem, no
 }
 
 export function planetPositionOnOrbit(planet: Planet, system: StarSystem, angle: number): Point3D {
-  const tilt = planet.orbit.inclination + Math.asin(Math.min(1, UNIVERSE_CONFIG.planetOrbits.verticalAmplitude / planet.orbit.radius));
+  const tilt = planet.orbit.inclination;
   const radial = Math.sin(angle) * planet.orbit.radius;
   return {
     x: system.position.x + Math.cos(angle) * planet.orbit.radius,
@@ -402,8 +459,17 @@ function repairUniverse(state: UniverseState, now: number) {
     if (!systemIds.has(planet.starSystemId)) planet.starSystemId = CORE_SYSTEM_ID;
     planet.orbit = planet.orbit && Number.isFinite(planet.orbit.radius) ? planet.orbit : makeOrbit(index, planet.id, planet.starSystemId);
   });
-  for (const system of state.starSystems) system.planetIds = state.planets.filter(({ starSystemId }) => starSystemId === system.id).map(({ id }) => id);
+  for (const system of state.starSystems) {
+    const planets = state.planets.filter(({ starSystemId }) => starSystemId === system.id);
+    system.planetIds = planets.map(({ id }) => id);
+    planets.forEach((planet, band) => {
+      const orbit = makeOrbit(band, planet.id, system.id);
+      Object.assign(planet, planetTraitsForBand(system.id, band));
+      planet.orbit = { ...orbit, phase: Number.isFinite(planet.orbit.phase) ? planet.orbit.phase : orbit.phase, speed: Number.isFinite(planet.orbit.speed) ? planet.orbit.speed : orbit.speed, direction: planet.orbit.direction === -1 ? -1 : 1 };
+    });
+  }
   if (!core.planetIds.length) { const prime = makePlanet(state.planets.length, null, core, now); prime.name = "Codex Prime"; state.planets.unshift(prime); core.planetIds.push(prime.id); planetIds.add(prime.id); }
+  relayoutStarSystems(state);
   const satelliteIds = new Set<string>();
   state.satellites = state.satellites.filter((satellite) => satellite?.id && !satelliteIds.has(satellite.id) && planetIds.has(satellite.planetId) && validTaskKey(satellite.taskKey) && satelliteIds.add(satellite.id));
   const aliasOwners = new Map<string, number>();
@@ -455,7 +521,7 @@ export function resolveProjectSystem(state: UniverseState, input?: ProjectIdenti
 function beginStarFormation(state: UniverseState, system: StarSystem, now: number) {
   if (system.lifecycleState !== "latent" || system.pendingActivityCount < UNIVERSE_CONFIG.starSystems.minimumActivitiesToMaterialize) return;
   system.lifecycleState = "forming";
-  if (!system.planetIds.length) { const planet = makePlanet(state.planets.length, null, system, now); state.planets.push(planet); system.planetIds.push(planet.id); }
+  if (!system.planetIds.length) { const planet = makePlanet(state.planets.length, null, system, now); state.planets.push(planet); system.planetIds.push(planet.id); relayoutStarSystems(state); }
   if (state.activeStarFormation) {
     system.lifecycleState = "stable";
     for (const planet of state.planets.filter(({ starSystemId }) => starSystemId === system.id)) { planet.lifecycleState = "stable"; planet.maturity = Math.max(.35, planet.maturity); }
@@ -471,6 +537,7 @@ export function beginExpansion(state: UniverseState, parentPlanetId: string, now
   if (!parent || !system || !["stable", "preparing-expansion", "active", "communicating"].includes(parent.lifecycleState) || planetPopulation(state, parent.id) < UNIVERSE_CONFIG.planetCapacity.expansionThreshold) return null;
   const child = makePlanet(state.planets.length, parent, system, now);
   parent.childPlanetIds.push(child.id); parent.lifecycleState = "launching"; system.planetIds.push(child.id); state.planets.push(child);
+  relayoutStarSystems(state);
   state.universe.expansionInProgress = true; state.universe.totalExpansions += 1;
   state.activeExpansion = { id: `expansion_${state.universe.totalExpansions}`, parentPlanetId: parent.id, childPlanetId: child.id, phase: "launching", startedAt: iso(now), progress: 0 };
   state.camera.mode = "launch-cinematic";

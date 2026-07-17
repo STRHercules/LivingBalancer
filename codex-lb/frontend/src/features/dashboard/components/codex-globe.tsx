@@ -12,7 +12,9 @@ import {
   resolveProjectSystem,
   routeCrossSystemSignal,
   routeSignal,
+  starSystemExtent,
   summarizeUniverse,
+  type Planet,
   type ProjectIdentityInput,
   type StarSystem,
   type TaskKey,
@@ -169,7 +171,10 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     const renderedGlobePoints: RenderedGlobePoint[] = [];
     const atmosphereDust: Dust[] = [];
     const renderedAtmosphereDust: RenderedDust[] = [];
-    const landscapeLightSprites = new Map<string, { image: HTMLCanvasElement; center: number }>();
+    const lightSprites = new Map<string, { image: HTMLCanvasElement; center: number }>();
+    const ringSprites = new Map<string, { image: HTMLCanvasElement; center: number; radius: number }>();
+    const trailSprites = new Map<string, { image: HTMLCanvasElement; padding: number; length: number }>();
+    const rocketSprites = new Map<number, HTMLCanvasElement>();
     const knowledge: Satellite[] = [];
     const packets: Packet[] = [];
     const pulses: Pulse[] = [];
@@ -219,6 +224,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     let dragY = 0;
     let dragMoved = false;
     let lastUniverseSync = 0;
+    let persistTimer: number | undefined;
     const planetScreens = new Map<string, { x: number; y: number; radius: number; z: number }>();
     const starScreens = new Map<string, { x: number; y: number; radius: number; z: number }>();
     const planetPositions = new Map<string, Point3D>();
@@ -235,6 +241,10 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       } catch {
         // Storage may be unavailable in private or policy-restricted browser contexts.
       }
+    };
+    const schedulePersistUniverse = () => {
+      window.clearTimeout(persistTimer);
+      persistTimer = window.setTimeout(() => { persistTimer = undefined; persistUniverse(); }, 180);
     };
 
     const makeGlobe = () => {
@@ -299,6 +309,103 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     const project = (point: Point3D, scale = 1): ScreenPoint => {
       const perspective = 3.2 / (3.2 - point.z * 0.52);
       return { x: centerX + point.x * radius * scale * perspective, y: centerY + point.y * radius * scale * perspective, z: point.z, perspective };
+    };
+
+    const drawCachedLight = (x: number, y: number, size: number, glowColor: string, blur: number, fillColor = glowColor, alpha = 1) => {
+      const sizeKey = Math.max(1, Math.round(size * 4));
+      const scale = clamp(devicePixelRatio || 1, 1, 2);
+      const key = `${glowColor}:${fillColor}:${sizeKey}:${blur}:${scale}`;
+      let sprite = lightSprites.get(key);
+      if (!sprite) {
+        const dotSize = sizeKey / 4;
+        const center = Math.ceil(dotSize + blur * 1.5 + 2);
+        const image = document.createElement("canvas");
+        image.width = image.height = Math.ceil(center * 2 * scale);
+        const spriteContext = image.getContext("2d");
+        if (spriteContext) {
+          spriteContext.setTransform(scale, 0, 0, scale, 0, 0);
+          spriteContext.fillStyle = fillColor; spriteContext.shadowColor = glowColor; spriteContext.shadowBlur = blur;
+          spriteContext.beginPath(); spriteContext.arc(center, center, dotSize, 0, Math.PI * 2); spriteContext.fill();
+        }
+        sprite = { image, center };
+        lightSprites.set(key, sprite);
+      }
+      const previousAlpha = ctx.globalAlpha;
+      ctx.globalAlpha *= alpha;
+      ctx.drawImage(sprite.image, x - sprite.center, y - sprite.center, sprite.center * 2, sprite.center * 2);
+      ctx.globalAlpha = previousAlpha;
+    };
+
+    const drawCachedRing = (x: number, y: number, radius: number, strokeColor: string, glowColor: string, lineWidth: number, blur: number) => {
+      const radiusStep = radius >= 32 ? 4 : radius >= 12 ? 2 : .5;
+      const ringRadius = Math.max(.5, Math.round(radius / radiusStep) * radiusStep);
+      const radiusKey = Math.round(ringRadius * 2);
+      const widthKey = Math.max(1, Math.round(lineWidth * 4));
+      const scale = clamp(devicePixelRatio || 1, 1, 2);
+      const key = `${strokeColor}:${glowColor}:${radiusKey}:${widthKey}:${blur}:${scale}`;
+      let sprite = ringSprites.get(key);
+      if (!sprite) {
+        const center = Math.ceil(ringRadius + blur * 1.5 + lineWidth + 2);
+        const image = document.createElement("canvas");
+        image.width = image.height = Math.ceil(center * 2 * scale);
+        const spriteContext = image.getContext("2d");
+        if (spriteContext) {
+          spriteContext.setTransform(scale, 0, 0, scale, 0, 0);
+          spriteContext.beginPath(); spriteContext.arc(center, center, ringRadius, 0, Math.PI * 2);
+          spriteContext.strokeStyle = strokeColor; spriteContext.lineWidth = widthKey / 4; spriteContext.shadowColor = glowColor; spriteContext.shadowBlur = blur; spriteContext.stroke();
+        }
+        sprite = { image, center, radius: ringRadius };
+        ringSprites.set(key, sprite);
+      }
+      const extent = sprite.center * radius / sprite.radius;
+      ctx.drawImage(sprite.image, x - extent, y - extent, extent * 2, extent * 2);
+    };
+
+    const drawCachedTrail = (start: { x: number; y: number }, end: { x: number; y: number }, color: string, lineWidth: number, blur: number, alpha: number) => {
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const length = Math.hypot(dx, dy);
+      if (length < .5) return;
+      const lengthStep = length >= 16 ? 4 : 1;
+      const lengthKey = Math.max(1, Math.round(length / lengthStep) * lengthStep);
+      const widthKey = Math.round(lineWidth * 4);
+      const scale = clamp(devicePixelRatio || 1, 1, 2);
+      const key = `${color}:${lengthKey}:${widthKey}:${blur}:${scale}`;
+      let sprite = trailSprites.get(key);
+      if (!sprite) {
+        const padding = Math.ceil(blur * 1.5 + lineWidth + 2);
+        const image = document.createElement("canvas");
+        image.width = Math.ceil((lengthKey + padding * 2) * scale);
+        image.height = Math.ceil(padding * 2 * scale);
+        const spriteContext = image.getContext("2d");
+        if (spriteContext) {
+          spriteContext.setTransform(scale, 0, 0, scale, 0, 0);
+          spriteContext.beginPath(); spriteContext.moveTo(padding, padding); spriteContext.lineTo(padding + lengthKey, padding);
+          spriteContext.strokeStyle = color; spriteContext.lineWidth = widthKey / 4; spriteContext.lineCap = "round"; spriteContext.shadowColor = color; spriteContext.shadowBlur = blur; spriteContext.stroke();
+        }
+        sprite = { image, padding, length: lengthKey };
+        trailSprites.set(key, sprite);
+      }
+      ctx.save(); ctx.globalAlpha *= alpha; ctx.translate(start.x, start.y); ctx.rotate(Math.atan2(dy, dx));
+      ctx.drawImage(sprite.image, -sprite.padding, -sprite.padding, length + sprite.padding * 2, sprite.padding * 2);
+      ctx.restore();
+    };
+
+    const drawCachedRocket = () => {
+      const scale = clamp(devicePixelRatio || 1, 1, 2);
+      let image = rocketSprites.get(scale);
+      if (!image) {
+        image = document.createElement("canvas");
+        image.width = Math.ceil(64 * scale); image.height = Math.ceil(48 * scale);
+        const spriteContext = image.getContext("2d");
+        if (spriteContext) {
+          spriteContext.setTransform(scale, 0, 0, scale, 0, 0); spriteContext.translate(32, 24);
+          spriteContext.beginPath(); spriteContext.moveTo(9, 0); spriteContext.lineTo(-7, -4); spriteContext.lineTo(-4, 0); spriteContext.lineTo(-7, 4); spriteContext.closePath();
+          spriteContext.fillStyle = "#fff2d5"; spriteContext.shadowColor = "#ffac5c"; spriteContext.shadowBlur = 18; spriteContext.fill();
+        }
+        rocketSprites.set(scale, image);
+      }
+      ctx.drawImage(image, -32, -24, 64, 48);
     };
 
     const makeSatellite = (taskKey: TaskKey, taskSeed: string, color: string, active = true, stored?: UniverseSatellite): Satellite => {
@@ -447,6 +554,33 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       ctx.setLineDash([]);
     };
 
+    const drawPlanetRings = (planet: Planet, front: boolean) => {
+      if (!planet.hasRings || radius < 4) return;
+      ctx.save(); ctx.translate(centerX, centerY); ctx.rotate(-.18 + planet.orbit.phase * .04);
+      for (let band = 0; band < 3; band += 1) {
+        ctx.beginPath(); ctx.ellipse(0, 0, radius * (1.38 + band * .13), radius * (.3 + band * .025), 0, front ? 0 : Math.PI, front ? Math.PI : Math.PI * 2);
+        ctx.strokeStyle = rgba(band === 1 ? "#ffd9a0" : currentPlanetColor, front ? .5 - band * .09 : .25 - band * .05); ctx.lineWidth = Math.max(.65, radius * .018); ctx.stroke();
+      }
+      ctx.restore();
+    };
+
+    const drawPlanetMoons = (time: number, planet: Planet, front: boolean) => {
+      if (!planet.moonCount || radius < 5) return;
+      ctx.save(); ctx.translate(centerX, centerY);
+      for (let index = 0; index < planet.moonCount; index += 1) {
+        const moonOrbit = radius * (1.62 + index * .36);
+        const orbitHeight = moonOrbit * (.24 + index * .025);
+        if (!front) { ctx.beginPath(); ctx.ellipse(0, 0, moonOrbit, orbitHeight, -.12, 0, Math.PI * 2); ctx.strokeStyle = "rgba(180,199,207,.12)"; ctx.lineWidth = .6; ctx.stroke(); }
+        const angle = planet.orbit.phase * (index + 1) + index * GOLDEN_ANGLE + time * .00008 / (index + 1);
+        if ((Math.sin(angle) >= 0) !== front) continue;
+        const x = Math.cos(angle) * moonOrbit;
+        const y = Math.sin(angle) * orbitHeight;
+        const moonRadius = clamp(radius * (.065 + index * .008), 1, 3.5);
+        drawCachedLight(x, y, moonRadius, "#a9bdc6", front ? 5 : 2, front ? "#e7e1ce" : "#7d8d95", front ? 1 : .65);
+      }
+      ctx.restore();
+    };
+
     const updateAtmosphere = (time: number) => {
       const angle = time * 0.000018;
       const extraCosine = Math.cos(angle);
@@ -482,7 +616,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       shell.addColorStop(0.9, "rgba(1,14,25,.16)");
       shell.addColorStop(1, "rgba(35,162,230,.075)");
       ctx.beginPath(); ctx.arc(centerX, centerY, radius, 0, Math.PI * 2); ctx.fillStyle = shell; ctx.fill();
-      ctx.beginPath(); ctx.arc(centerX, centerY, radius, 0, Math.PI * 2); ctx.strokeStyle = rgba(currentPlanetColor, .42); ctx.lineWidth = 1; ctx.shadowColor = rgba(currentPlanetColor, .55); ctx.shadowBlur = 15; ctx.stroke(); ctx.shadowBlur = 0;
+      drawCachedRing(centerX, centerY, radius, rgba(currentPlanetColor, .42), rgba(currentPlanetColor, .55), 1, 15);
       const terminator = ctx.createLinearGradient(centerX - radius, centerY, centerX + radius, centerY);
       terminator.addColorStop(0, "rgba(0,0,0,.57)"); terminator.addColorStop(0.42, "rgba(0,0,0,.02)"); terminator.addColorStop(1, "rgba(35,172,234,.04)");
       ctx.save(); ctx.beginPath(); ctx.arc(centerX, centerY, radius - 1, 0, Math.PI * 2); ctx.clip(); ctx.fillStyle = terminator; ctx.fillRect(centerX - radius, centerY - radius, radius * 2, radius * 2); ctx.restore();
@@ -525,25 +659,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
           ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, y, size, 0, Math.PI * 2); ctx.fill();
           continue;
         }
-        const sizeKey = Math.round(size * 4);
-        const scale = clamp(devicePixelRatio || 1, 1, 2);
-        const key = `${color}:${sizeKey}:${blur}:${scale}`;
-        let sprite = landscapeLightSprites.get(key);
-        if (!sprite) {
-          const dotSize = sizeKey / 4;
-          const center = Math.ceil(dotSize + blur * 1.5 + 2);
-          const image = document.createElement("canvas");
-          image.width = image.height = Math.ceil(center * 2 * scale);
-          const spriteContext = image.getContext("2d");
-          if (spriteContext) {
-            spriteContext.setTransform(scale, 0, 0, scale, 0, 0);
-            spriteContext.fillStyle = color; spriteContext.shadowColor = color; spriteContext.shadowBlur = blur;
-            spriteContext.beginPath(); spriteContext.arc(center, center, dotSize, 0, Math.PI * 2); spriteContext.fill();
-          }
-          sprite = { image, center };
-          landscapeLightSprites.set(key, sprite);
-        }
-        ctx.drawImage(sprite.image, x - sprite.center, y - sprite.center, sprite.center * 2, sprite.center * 2);
+        drawCachedLight(x, y, size, color, blur);
       }
       ctx.restore(); ctx.globalAlpha = 1;
     };
@@ -556,12 +672,13 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(centerX, centerY, coreRadius * 2.5, 0, Math.PI * 2); ctx.fill();
       const fill = ctx.createRadialGradient(centerX - coreRadius * 0.25, centerY - coreRadius * 0.3, coreRadius * 0.05, centerX, centerY, coreRadius);
       fill.addColorStop(0, rgba(color, 0.2)); fill.addColorStop(0.62, "rgba(4,24,38,.94)"); fill.addColorStop(1, "rgba(1,8,14,.97)");
-      ctx.beginPath(); ctx.arc(centerX, centerY, coreRadius, 0, Math.PI * 2); ctx.fillStyle = fill; ctx.fill(); ctx.strokeStyle = rgba(color, 0.88); ctx.shadowColor = color; ctx.shadowBlur = activeTask ? 18 : 9; ctx.stroke(); ctx.shadowBlur = 0;
+      ctx.beginPath(); ctx.arc(centerX, centerY, coreRadius, 0, Math.PI * 2); ctx.fillStyle = fill; ctx.fill();
+      drawCachedRing(centerX, centerY, coreRadius, rgba(color, .88), color, 1, activeTask ? 18 : 9);
       const spin = time * (activeTask ? 0.0014 : 0.00055);
       for (let index = 0; index < 3; index += 1) {
         ctx.save(); ctx.translate(centerX, centerY); ctx.rotate(spin * (index % 2 ? -1 : 1) + index * 2.09); ctx.beginPath(); ctx.arc(0, 0, coreRadius * (0.38 + index * 0.13), -0.38, 0.38); ctx.strokeStyle = rgba(color, 0.88 - index * 0.19); ctx.lineWidth = 1.2; ctx.stroke(); ctx.restore();
       }
-      ctx.beginPath(); ctx.arc(centerX, centerY, 3.2, 0, Math.PI * 2); ctx.fillStyle = "#eaffff"; ctx.shadowColor = color; ctx.shadowBlur = 14; ctx.fill(); ctx.shadowBlur = 0;
+      drawCachedLight(centerX, centerY, 3.2, color, 14, "#eaffff");
     };
 
     const drawKnowledge = (time: number, planetId: string, detail: number, showAll = false) => {
@@ -580,38 +697,50 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         ctx.restore();
       }
       ctx.save();
+      const linkPaths = Array.from({ length: 16 }, () => new Path2D());
+      const usedLinkPaths = new Uint8Array(linkPaths.length);
+      const maximumLinkDistance = radius * .72;
+      const maximumLinkDistanceSquared = maximumLinkDistance * maximumLinkDistance;
       for (let index = 0; index < rendered.length; index += 1) {
         const source = rendered[index];
         let nearestIndex = -1;
         let secondIndex = -1;
-        let nearestDistance = Infinity;
-        let secondDistance = Infinity;
+        let nearestDistanceSquared = Infinity;
+        let secondDistanceSquared = Infinity;
         for (let candidate = 0; candidate < rendered.length; candidate += 1) {
           if (candidate === index) continue;
           const target = rendered[candidate];
-          const distance = Math.hypot(source.point.x - target.point.x, source.point.y - target.point.y);
-          if (distance >= radius * 0.72) continue;
-          if (distance < nearestDistance) {
-            secondIndex = nearestIndex; secondDistance = nearestDistance;
-            nearestIndex = candidate; nearestDistance = distance;
-          } else if (distance < secondDistance) {
-            secondIndex = candidate; secondDistance = distance;
+          const dx = source.point.x - target.point.x;
+          const dy = source.point.y - target.point.y;
+          const distanceSquared = dx * dx + dy * dy;
+          if (distanceSquared >= maximumLinkDistanceSquared) continue;
+          if (distanceSquared < nearestDistanceSquared) {
+            secondIndex = nearestIndex; secondDistanceSquared = nearestDistanceSquared;
+            nearestIndex = candidate; nearestDistanceSquared = distanceSquared;
+          } else if (distanceSquared < secondDistanceSquared) {
+            secondIndex = candidate; secondDistanceSquared = distanceSquared;
           }
         }
         for (let nearest = 0; nearest < 2; nearest += 1) {
           const candidate = nearest ? secondIndex : nearestIndex;
           if (candidate < 0) continue;
-          const distance = nearest ? secondDistance : nearestDistance;
+          const distanceSquared = nearest ? secondDistanceSquared : nearestDistanceSquared;
           const target = rendered[candidate];
           if (target.satellite.id < source.satellite.id) continue;
-          ctx.beginPath(); ctx.moveTo(source.point.x, source.point.y); ctx.lineTo(target.point.x, target.point.y); ctx.strokeStyle = `rgba(67,176,230,${0.025 + (1 - distance / (radius * 0.72)) * 0.1})`; ctx.lineWidth = 0.55; ctx.stroke();
+          const strength = 1 - Math.sqrt(distanceSquared) / maximumLinkDistance;
+          const bucket = Math.min(linkPaths.length - 1, Math.floor(strength * linkPaths.length));
+          linkPaths[bucket].moveTo(source.point.x, source.point.y); linkPaths[bucket].lineTo(target.point.x, target.point.y); usedLinkPaths[bucket] = 1;
         }
+      }
+      ctx.lineWidth = .55;
+      for (let bucket = 0; bucket < linkPaths.length; bucket += 1) if (usedLinkPaths[bucket]) {
+        ctx.strokeStyle = `rgba(67,176,230,${.025 + (bucket + .5) / linkPaths.length * .1})`; ctx.stroke(linkPaths[bucket]);
       }
       for (const { satellite, point } of rendered.sort((a, b) => a.point.z - b.point.z)) {
         satellite.screenX = point.x; satellite.screenY = point.y;
         const front = clamp((point.z + 1) / 2, 0.2, 1); const dot = 1.1 + front * 1.25;
         ctx.beginPath(); ctx.arc(point.x, point.y, dot * 2.7, 0, Math.PI * 2); ctx.fillStyle = rgba(satellite.color, 0.045 * front); ctx.fill();
-        ctx.beginPath(); ctx.arc(point.x, point.y, dot, 0, Math.PI * 2); ctx.fillStyle = satellite.color; ctx.globalAlpha = 0.34 + front * 0.66; ctx.shadowColor = satellite.color; ctx.shadowBlur = 9; ctx.fill(); ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+        drawCachedLight(point.x, point.y, dot, satellite.color, 9, satellite.color, .34 + front * .66);
       }
       ctx.restore();
     };
@@ -641,7 +770,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       ctx.save(); ctx.beginPath(); ctx.arc(point.x, point.y, 20 * pulse, 0, Math.PI * 2); ctx.fillStyle = rgba(activeSatellite.color, 0.045); ctx.fill();
       ctx.beginPath(); ctx.arc(point.x, point.y, 10 * pulse, 0, Math.PI * 2); ctx.strokeStyle = rgba(activeSatellite.color, 0.34); ctx.lineWidth = 0.8; ctx.stroke();
       ctx.save(); ctx.translate(point.x, point.y); ctx.rotate(time * 0.0018); ctx.beginPath(); ctx.arc(0, 0, 15, -0.55, 0.55); ctx.arc(0, 0, 15, Math.PI - 0.55, Math.PI + 0.55); ctx.strokeStyle = rgba(activeSatellite.color, 0.72); ctx.stroke(); ctx.restore();
-      ctx.beginPath(); ctx.arc(point.x, point.y, 3.1, 0, Math.PI * 2); ctx.fillStyle = "#f7ffff"; ctx.shadowColor = activeSatellite.color; ctx.shadowBlur = 20; ctx.fill(); ctx.restore(); ctx.shadowBlur = 0;
+      drawCachedLight(point.x, point.y, 3.1, activeSatellite.color, 20, "#f7ffff"); ctx.restore();
       return point;
     };
 
@@ -659,10 +788,10 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         const pointAt = (amount: number) => ({ x: (1 - amount) ** 2 * source.x + 2 * (1 - amount) * amount * bend.x + amount ** 2 * target.x, y: (1 - amount) ** 2 * source.y + 2 * (1 - amount) * amount * bend.y + amount ** 2 * target.y });
         const point = pointAt(eased); const tail = pointAt(clamp(eased - 0.045, 0, 1));
         ctx.beginPath(); ctx.moveTo(tail.x, tail.y); ctx.lineTo(point.x, point.y); ctx.strokeStyle = rgba(packet.color, 0.36 * Math.sin(Math.PI * elapsed)); ctx.lineWidth = 0.75; ctx.stroke();
-        ctx.beginPath(); ctx.arc(point.x, point.y, 1.2 + packet.size, 0, Math.PI * 2); ctx.fillStyle = "#fff"; ctx.shadowColor = packet.color; ctx.shadowBlur = 13; ctx.globalAlpha = Math.sin(Math.PI * elapsed); ctx.fill();
+        drawCachedLight(point.x, point.y, 1.2 + packet.size, packet.color, 13, "#fff", Math.sin(Math.PI * elapsed));
         if (elapsed >= 1) { packets.splice(index, 1); pulses.push({ x: target.x, y: target.y, color: packet.color, startedAt: time, duration: 540 }); }
       }
-      ctx.restore(); ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+      ctx.restore();
     };
 
     const drawPulses = (time: number) => {
@@ -676,6 +805,11 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     };
 
     const updateHoverLabel = (activePoint: ScreenPoint | null) => {
+      if (universe.camera.mode === "universe-overview") {
+        const system = [...starScreens.entries()].map(([id, point]) => ({ system: universe.starSystems.find((candidate) => candidate.id === id), point, distance: Math.hypot(point.x - hoverX, point.y - hoverY) })).filter(({ system, distance }) => system && distance <= 16).sort((a, b) => a.distance - b.distance)[0];
+        if (system?.system) showSystemLabel(system.system, system.point); else labelRef.current?.classList.remove("visible");
+        return;
+      }
       let hovered: Satellite | null = null;
       let nearestDistance = Infinity;
       for (const satellite of knowledge) {
@@ -723,7 +857,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       const overview = universe.camera.mode === "universe-overview" || universe.camera.mode === "free-navigation";
       const planetFocus = universe.camera.mode === "planet-focus" && focusedPlanet;
       const centroid = planetFocus ? planetPositions.get(focusedPlanet.id)! : overview ? systems.reduce((point, system) => ({ x: point.x + system.position.x / systems.length, y: point.y + system.position.y / systems.length, z: point.z + system.position.z / systems.length }), { x: 0, y: 0, z: 0 }) : focusedSystem.position;
-      const maxDistance = overview ? Math.max(8, ...systems.map((system) => Math.hypot(system.position.x - centroid.x, system.position.z - centroid.z))) + UNIVERSE_CONFIG.systemPlacement.safetyMargin : Math.max(8, ...universe.planets.filter(({ starSystemId }) => starSystemId === focusedSystem.id).map(({ orbit }) => orbit.radius + 2));
+      const maxDistance = overview ? Math.max(8, ...systems.map((system) => Math.hypot(system.position.x - centroid.x, system.position.z - centroid.z) + starSystemExtent(universe, system.id))) + UNIVERSE_CONFIG.systemPlacement.safetyMargin : Math.max(8, ...universe.planets.filter(({ starSystemId }) => starSystemId === focusedSystem.id).map(({ orbit }) => orbit.radius + 2));
       const scale = planetFocus ? viewportRadius * 1.7 * cameraZoom : Math.min(width, height) * .38 / maxDistance * cameraZoom;
       const cos = Math.cos(cameraRotation);
       const sin = Math.sin(cameraRotation);
@@ -749,7 +883,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         if (!position) continue;
         const point = projectUniversePoint(position);
         const sameSystem = planet.starSystemId === focusedSystem.id;
-        let planetRadius = planetFocus ? planet.id === focusedPlanet.id ? viewportRadius : sameSystem ? 26 : 0 : overview ? clamp(scale * .42, 3, 13) : sameSystem ? clamp(scale * .48, 26, 64) : 0;
+        let planetRadius = planetFocus ? planet.id === focusedPlanet.id ? viewportRadius : sameSystem ? 26 * planet.radius : 0 : overview ? clamp(scale * .42 * planet.radius, 3, 18) : sameSystem ? clamp(scale * .72 * planet.radius, 11, 76) : 0;
         const expansion = universe.activeExpansion;
         if (expansion?.childPlanetId === planet.id) planetRadius *= expansion.phase === "launching" ? 0 : expansion.phase === "forming" ? Math.max(.08, expansion.progress) : 1;
         planetScreens.set(planet.id, { ...point, radius: planetRadius });
@@ -775,19 +909,21 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         const selected = system.id === selectedId;
         const visiblePlanets = universe.planets.filter((planet) => planet.starSystemId === system.id && (universe.camera.mode !== "universe-overview" || selected));
         ctx.save();
+        ctx.beginPath();
         for (const planet of visiblePlanets) {
           const planetScreen = planetScreens.get(planet.id);
           if (!planetScreen || planetScreen.radius <= 0) continue;
           const orbit = orbitScreens.get(planet.id);
           if (!orbit?.length) continue;
-          ctx.beginPath(); ctx.moveTo(orbit[0].x, orbit[0].y); for (const point of orbit.slice(1)) ctx.lineTo(point.x, point.y); ctx.strokeStyle = rgba(system.color, selected ? .16 : .07); ctx.lineWidth = .7; ctx.stroke();
+          ctx.moveTo(orbit[0].x, orbit[0].y); for (let index = 1; index < orbit.length; index += 1) ctx.lineTo(orbit[index].x, orbit[index].y);
         }
+        ctx.strokeStyle = rgba(system.color, selected ? .16 : .07); ctx.lineWidth = .7; ctx.stroke();
         const pulse = 1 + Math.sin(time * .002 + system.position.x) * .07;
         const coreRadius = Math.max(1.2, screen.radius * Math.max(.18, forming) * pulse);
         const halo = ctx.createRadialGradient(screen.x, screen.y, 0, screen.x, screen.y, coreRadius * (selected ? 4.2 : 3.2));
         halo.addColorStop(0, rgba(system.color, dormant ? .42 : .88)); halo.addColorStop(.24, rgba(system.color, dormant ? .18 : .38)); halo.addColorStop(1, rgba(system.color, 0));
         ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(screen.x, screen.y, coreRadius * (selected ? 4.2 : 3.2), 0, Math.PI * 2); ctx.fill();
-        ctx.beginPath(); ctx.arc(screen.x, screen.y, coreRadius, 0, Math.PI * 2); ctx.fillStyle = forming < .25 ? rgba(system.color, forming * 3) : "#fff4d4"; ctx.shadowColor = system.color; ctx.shadowBlur = dormant ? 4 : selected ? 18 : 10; ctx.fill(); ctx.shadowBlur = 0;
+        drawCachedLight(screen.x, screen.y, coreRadius, system.color, dormant ? 4 : selected ? 18 : 10, forming < .25 ? system.color : "#fff4d4", forming < .25 ? forming * 3 : 1);
         if (forming > .42 && labeledSystems.has(system.id) && screen.x > 40 && screen.x < width - 40 && screen.y > 20 && screen.y < height - 20) {
           ctx.font = `${selected ? 10 : 8}px JetBrains Mono`; ctx.textAlign = "center"; ctx.fillStyle = selected ? "rgba(255,239,205,.92)" : "rgba(205,195,168,.68)"; ctx.fillText(system.displayName.toUpperCase(), screen.x, screen.y - coreRadius - 13);
         }
@@ -808,7 +944,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
             const point = curvePoint(source, destination, easeInOut(expansion.progress), -90);
             const ahead = curvePoint(source, destination, Math.min(1, easeInOut(expansion.progress) + .015), -90);
             ctx.translate(point.x, point.y); ctx.rotate(Math.atan2(ahead.y - point.y, ahead.x - point.x));
-            ctx.beginPath(); ctx.moveTo(9, 0); ctx.lineTo(-7, -4); ctx.lineTo(-4, 0); ctx.lineTo(-7, 4); ctx.closePath(); ctx.fillStyle = "#fff2d5"; ctx.shadowColor = "#ffac5c"; ctx.shadowBlur = 18; ctx.fill();
+            drawCachedRocket();
           }
           ctx.restore();
         }
@@ -830,7 +966,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
           const tailAmount = Math.max(0, amount - .12);
           const tail = curvePoint(route[segment], route[segment + 1], tailAmount, segment === 1 ? -120 : -28);
           ctx.save(); ctx.setLineDash([3, 7]); ctx.beginPath(); ctx.moveTo(source.x, source.y); ctx.lineTo(sourceStar.x, sourceStar.y); ctx.quadraticCurveTo((sourceStar.x + destinationStar.x) / 2, Math.min(sourceStar.y, destinationStar.y) - 120, destinationStar.x, destinationStar.y); ctx.lineTo(destination.x, destination.y); ctx.strokeStyle = rgba(color, .28); ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
-          ctx.beginPath(); ctx.moveTo(tail.x, tail.y); ctx.lineTo(point.x, point.y); ctx.strokeStyle = rgba(color, .95); ctx.lineWidth = 1.8; ctx.shadowColor = color; ctx.shadowBlur = 12; ctx.stroke();
+          drawCachedTrail(tail, point, color, 1.8, 12, .95);
           for (const star of [sourceStar, destinationStar]) { ctx.beginPath(); ctx.arc(star.x, star.y, 4 + Math.sin(signal.progress * Math.PI) * 5, 0, Math.PI * 2); ctx.strokeStyle = rgba(color, .5); ctx.stroke(); }
           ctx.restore();
           continue;
@@ -839,7 +975,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         const point = curvePoint(source, destination, easeInOut(signal.progress), bend);
         const tail = curvePoint(source, destination, Math.max(0, easeInOut(signal.progress) - .08), bend);
         ctx.save(); ctx.beginPath(); ctx.moveTo(source.x, source.y); const control = curvePoint(source, destination, .5, bend); ctx.quadraticCurveTo(control.x, control.y, destination.x, destination.y); ctx.strokeStyle = rgba(color, .16); ctx.lineWidth = signal.taskKey === "tool" ? 1.5 : .75; ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(tail.x, tail.y); ctx.lineTo(point.x, point.y); ctx.strokeStyle = rgba(color, .9); ctx.lineWidth = 1.4; ctx.shadowColor = color; ctx.shadowBlur = 10; ctx.stroke(); ctx.restore();
+        drawCachedTrail(tail, point, color, 1.4, 10, .9); ctx.restore();
       }
       for (const migration of universe.activeMigrations) {
         if (migration.progress <= 0) continue;
@@ -847,7 +983,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         const destination = planetScreens.get(migration.destinationPlanetId);
         if (!source || !destination) continue;
         const point = curvePoint(source, destination, easeInOut(migration.progress), 55 + (migration.satelliteId.charCodeAt(migration.satelliteId.length - 1) % 5) * 8);
-        ctx.save(); ctx.beginPath(); ctx.arc(point.x, point.y, 1.8, 0, Math.PI * 2); ctx.fillStyle = "#d7f8ff"; ctx.shadowColor = "#52f6ad"; ctx.shadowBlur = 9; ctx.fill(); ctx.restore();
+        drawCachedLight(point.x, point.y, 1.8, "#52f6ad", 9, "#d7f8ff");
       }
 
       for (const system of universe.starSystems.filter(({ lifecycleState }) => lifecycleState !== "latent")) {
@@ -877,7 +1013,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         ctx.save();
         ctx.beginPath(); ctx.ellipse(anchor.x, anchor.y, orbit, orbit * .42, 0, angle - 1.25, angle + .3); ctx.strokeStyle = rgba(config.color, .24); ctx.lineWidth = 1; ctx.stroke();
         ctx.beginPath(); ctx.moveTo(anchor.x, anchor.y); ctx.lineTo(x, y); ctx.strokeStyle = rgba(config.color, .18); ctx.stroke();
-        ctx.beginPath(); ctx.arc(x, y, 3.2, 0, Math.PI * 2); ctx.fillStyle = config.color; ctx.shadowColor = config.color; ctx.shadowBlur = 10; ctx.fill(); ctx.shadowBlur = 0;
+        drawCachedLight(x, y, 3.2, config.color, 10);
         ctx.font = "8px JetBrains Mono"; ctx.textAlign = x < anchor.x ? "right" : "left"; ctx.fillStyle = rgba(config.color, .9); ctx.fillText(`CHAT ${chat.sessionId.slice(0, 6).toUpperCase()} · ${config.label.toUpperCase()}`, x + (x < anchor.x ? -7 : 7), y + 3);
         ctx.restore();
       }
@@ -928,18 +1064,22 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         const owned = knowledgeByPlanet.get(satellite.planetId);
         if (owned) owned.push(satellite); else knowledgeByPlanet.set(satellite.planetId, [satellite]);
       }
-      const visiblePlanets = universe.planets.map((planet) => ({ planet, screen: planetScreens.get(planet.id)! })).filter(({ screen }) => screen.radius > 0 && screen.x + screen.radius * 1.6 >= 0 && screen.x - screen.radius * 1.6 <= width && screen.y + screen.radius * 1.6 >= 0 && screen.y - screen.radius * 1.6 <= height).sort((a, b) => a.screen.z - b.screen.z).map(({ planet, screen }) => ({ planet, screen, detail: planet.id === selectedId || screen.radius >= 72 ? 0 : screen.radius >= 42 ? 1 : 2 }));
+      const visiblePlanets = universe.planets.map((planet) => ({ planet, screen: planetScreens.get(planet.id)! })).filter(({ screen }) => screen.radius > 0 && screen.x + screen.radius * 1.6 >= 0 && screen.x - screen.radius * 1.6 <= width && screen.y + screen.radius * 1.6 >= 0 && screen.y - screen.radius * 1.6 <= height).sort((a, b) => a.screen.z - b.screen.z).map(({ planet, screen }) => ({ planet, screen, detail: planet.id === selectedId || screen.radius >= 72 ? 0 : universe.camera.mode === "star-system-focus" && planet.starSystemId === universe.universe.focusedSystemId || screen.radius >= 42 ? 1 : 2 }));
       if (visiblePlanets.some(({ detail }) => detail < 2)) updateGlobePoints(time);
       if (visiblePlanets.some(({ detail }) => detail === 0)) updateAtmosphere(time);
       for (const { planet, screen, detail } of visiblePlanets) {
         centerX = screen.x; centerY = screen.y; radius = screen.radius;
         currentPlanetColor = PLANET_COLORS[universe.planets.indexOf(planet) % PLANET_COLORS.length];
         if (detail < 2) drawOrbitRings(time);
+        drawPlanetMoons(time, planet, false);
+        drawPlanetRings(planet, false);
         if (detail === 0) drawAtmosphere();
         drawGlobeShell();
         if (detail < 2) drawGlobePoints();
         drawKnowledge(time, planet.id, detail, universe.camera.mode === "star-system-focus" && planet.starSystemId === universe.universe.focusedSystemId);
         drawCore(time);
+        drawPlanetRings(planet, true);
+        drawPlanetMoons(time, planet, true);
         const point = drawActiveSatellite(time, planet.id);
         if (point) { activePoint = point; drawPackets(time); }
         if (planet.lifecycleState === "preparing-expansion") {
@@ -1011,7 +1151,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       persistUniverse();
     };
     const blockNativeMouse = (event: MouseEvent) => { event.preventDefault(); event.stopPropagation(); };
-    const wheel = (event: WheelEvent) => { event.preventDefault(); event.stopPropagation(); cameraZoom = clamp(cameraZoom * Math.exp(-event.deltaY * .001), .35, 4); persistUniverse(); };
+    const wheel = (event: WheelEvent) => { event.preventDefault(); event.stopPropagation(); cameraZoom = clamp(cameraZoom * Math.exp(-event.deltaY * .001), .35, 4); schedulePersistUniverse(); };
     const focusSelected = () => {
       const planetId = universe.universe.selectedPlanetId;
       const systemId = planetId ? universe.planets.find(({ id }) => id === planetId)?.starSystemId : universe.universe.selectedSystemId;
@@ -1082,7 +1222,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     if (knowledgeRef.current) knowledgeRef.current.textContent = String(knowledge.length);
     frame = requestAnimationFrame(draw);
     return () => {
-      cancelAnimationFrame(frame); observer.disconnect(); visibilityObserver.disconnect(); window.removeEventListener("resize", resize); window.removeEventListener("living-system-focus", focusSystem); window.removeEventListener("living-planet-focus", focusPlanet); window.removeEventListener("living-overview-request", overview); stage.removeEventListener("pointermove", move); stage.removeEventListener("pointerdown", down); stage.removeEventListener("pointerup", up); stage.removeEventListener("pointerleave", leave); stage.removeEventListener("wheel", wheel); stage.removeEventListener("contextmenu", blockNativeMouse); stage.removeEventListener("auxclick", blockNativeMouse); stage.removeEventListener("keydown", keydown); stage.removeEventListener("dblclick", doubleClick); stage.removeEventListener("living-task", runManual); stage.removeEventListener("living-auto", toggleAuto); stage.removeEventListener("living-clear", clear); stage.removeEventListener("living-overview", overview); stage.removeEventListener("living-focus", focusSelected); stage.removeEventListener("living-reset", resetCamera);
+      cancelAnimationFrame(frame); window.clearTimeout(persistTimer); if (persistTimer) persistUniverse(); observer.disconnect(); visibilityObserver.disconnect(); window.removeEventListener("resize", resize); window.removeEventListener("living-system-focus", focusSystem); window.removeEventListener("living-planet-focus", focusPlanet); window.removeEventListener("living-overview-request", overview); stage.removeEventListener("pointermove", move); stage.removeEventListener("pointerdown", down); stage.removeEventListener("pointerup", up); stage.removeEventListener("pointerleave", leave); stage.removeEventListener("wheel", wheel); stage.removeEventListener("contextmenu", blockNativeMouse); stage.removeEventListener("auxclick", blockNativeMouse); stage.removeEventListener("keydown", keydown); stage.removeEventListener("dblclick", doubleClick); stage.removeEventListener("living-task", runManual); stage.removeEventListener("living-auto", toggleAuto); stage.removeEventListener("living-clear", clear); stage.removeEventListener("living-overview", overview); stage.removeEventListener("living-focus", focusSelected); stage.removeEventListener("living-reset", resetCamera);
     };
   }, [onSatellitesChange, onUniverseChange]);
 
