@@ -1,5 +1,9 @@
 # LivingBalancer
 
+<video src="./Media/VideoDemo.mp4" controls width="100%">
+  Your browser does not support the video element.
+</video>
+
 LivingBalancer is a local-first extension of [CodexLB](./codex-lb/README.md) that keeps its account, request, API, report, settings, and automation controls while adding two integrated views of local Codex work:
 
 - **Living Codex** — an interactive cosmic visualization of projects, chats, integrations, automations, and observed local activity, embedded in the normal Dashboard.
