@@ -3,7 +3,7 @@ import type { SatelliteNameMetadata } from "./satellite-naming";
 export type TaskKey = "think" | "search" | "tool" | "write" | "verify";
 export type Point3D = { x: number; y: number; z: number };
 export type PlanetState = "forming" | "stabilizing" | "stable" | "active" | "communicating" | "preparing-expansion" | "launching" | "redistributing" | "dormant";
-export type StarSystemState = "latent" | "forming" | "stabilizing" | "stable" | "active" | "communicating" | "dormant";
+export type StarSystemState = "nebula" | "forming" | "stable" | "dormant" | "black-hole";
 export type MigrationState = "queued" | "departing" | "in-transit" | "arriving" | "captured" | "settling";
 export type CameraMode = "planet-focus" | "star-system-focus" | "universe-overview" | "task-focus" | "communication-focus" | "free-navigation" | "formation-cinematic" | "launch-cinematic" | "migration-cinematic";
 export type IdentitySource = "repository" | "git" | "workspace" | "session" | "core";
@@ -37,6 +37,7 @@ export type UniverseSatellite = {
   migrationState: MigrationState | "none";
   orbitSlot: number;
   transferHistory: Array<{ from: string; to: string; completedAt: string }>;
+  sourceId?: string;
 };
 
 export type Planet = {
@@ -67,6 +68,12 @@ export type StarSystem = {
   identityAliases: string[];
   displayName: string;
   lifecycleState: StarSystemState;
+  lastNonRemovedLifecycleState: "nebula" | "stable" | "dormant" | null;
+  observedAt: string;
+  lastObservedAt: string;
+  removedAt: string | null;
+  observationSource: string;
+  lastSourceRevision: string | null;
   visualFlags: string[];
   position: Point3D;
   radius: number;
@@ -81,6 +88,54 @@ export type StarSystem = {
   totalSignalsSent: number;
   totalSignalsReceived: number;
   totalCrossSystemSignals: number;
+};
+
+export type Asteroid = {
+  id: string;
+  sourceId: string;
+  systemId: string;
+  state: "archived" | "deleted";
+  title: string;
+  lastActiveAt: string;
+  changedAt: string;
+  recoverable: boolean;
+  archivedSatellite?: UniverseSatellite;
+};
+
+export type SpaceStation = {
+  id: string;
+  systemId: string;
+  kind: "mcp" | "plugin" | "ci" | "tool";
+  integrationId: string;
+  displayName: string;
+  status: "configured" | "active" | "healthy" | "degraded" | "offline";
+  firstObservedAt: string;
+  lastObservedAt: string;
+  lastUsedAt: string | null;
+};
+
+export type Pulsar = {
+  id: string;
+  systemId: string;
+  automationId: string;
+  displayName: string;
+  schedule: string;
+  status: "healthy" | "running" | "failed" | "paused" | "removed";
+  firstObservedAt: string;
+  lastObservedAt: string;
+  lastRunAt: string | null;
+};
+
+export type SystemTransition = { id: string; systemId: string; kind: "formation" | "collapse" | "recovery"; startedAt: string };
+
+export type UniverseObservationSnapshot = {
+  source: string;
+  revision?: string;
+  observedAt: string;
+  projects?: Array<{ identity: ProjectIdentityInput; removed?: boolean; removalAuthoritative?: boolean }>;
+  chats?: Array<{ sourceId: string; project?: ProjectIdentityInput | null; state: "active" | "archived" | "deleted"; title?: string; lastActiveAt?: string; changedAt?: string; satelliteId?: string }>;
+  stations?: Array<{ integrationId: string; project?: ProjectIdentityInput | null; kind: SpaceStation["kind"]; displayName: string; status: SpaceStation["status"]; lastUsedAt?: string | null }>;
+  pulsars?: Array<{ automationId: string; project?: ProjectIdentityInput | null; displayName: string; schedule: string; status: Pulsar["status"]; lastRunAt?: string | null }>;
 };
 
 export type Expansion = {
@@ -127,7 +182,7 @@ export type UniverseSignal = {
 };
 
 export type UniverseState = {
-  version: 3;
+  version: 4;
   universe: {
     id: "codex_universe";
     seed: string;
@@ -147,6 +202,10 @@ export type UniverseState = {
   starSystems: StarSystem[];
   planets: Planet[];
   satellites: UniverseSatellite[];
+  asteroidBelts: Asteroid[];
+  spaceStations: SpaceStation[];
+  pulsars: Pulsar[];
+  activeSystemTransitions: SystemTransition[];
   activeStarFormation: StarFormation | null;
   activeExpansion: Expansion | null;
   activeMigrations: Migration[];
@@ -154,7 +213,7 @@ export type UniverseState = {
   camera: { mode: CameraMode; focusedSystemId: string; focusedPlanetId: string | null; panX: number; panY: number; zoom: number; rotation: number; pitch: number };
 };
 
-export type StarSystemSummary = StarSystem & { satelliteCount: number; dominantActivityTypes: TaskKey[] };
+export type StarSystemSummary = StarSystem & { satelliteCount: number; asteroidCount: number; stationCount: number; pulsarCount: number; dominantActivityTypes: TaskKey[] };
 export type UniverseSummary = {
   systemCount: number;
   planetCount: number;
@@ -171,9 +230,13 @@ export type UniverseSummary = {
   formation: StarFormation | null;
   expansion: Expansion | null;
   cameraMode: CameraMode;
+  asteroidCount: number;
+  stationCount: number;
+  pulsarCount: number;
 };
 
-export const UNIVERSE_STORAGE_KEY = "codex-lb-living-universe-v3";
+export const UNIVERSE_STORAGE_KEY = "codex-lb-living-universe-v4";
+export const VERSION_3_UNIVERSE_STORAGE_KEY = "codex-lb-living-universe-v3";
 export const VERSION_2_UNIVERSE_STORAGE_KEY = "codex-lb-living-universe-v2";
 export const LEGACY_SATELLITE_STORAGE_KEY = "codex-lb-living-satellites-v1";
 export const CORE_SYSTEM_ID = "system_codex_core";
@@ -189,6 +252,7 @@ export const UNIVERSE_CONFIG = {
   systemPlacement: { baseSpacing: 18, ringSpacing: 14, verticalVariance: 4, safetyMargin: 6, layout: "seeded-spiral" },
   planetOrbits: { baseRadius: 3.4, bandSpacing: 2.4, minimumSurfaceClearance: 1, spacingVariance: .9, minimumPlanetRadius: .62, maximumPlanetRadius: 1.7, minimumSpeed: 0.008, maximumSpeed: 0.024 },
   crossSystemCommunication: { enabled: true, maximumConcurrentSignals: 24, idleTrafficEnabled: false },
+  universeObjects: { importObservedProjects: true, blackHoleRetention: "indefinite", deletedChatTombstonesEnabled: true, stationOfflineRetentionDays: 30, maximumRenderedAsteroidsPerSystem: 160, maximumRenderedStationsPerSystem: 12, maximumRenderedPulsarsPerSystem: 12 },
 } as const;
 
 const PLANET_NAMES = ["Axiom Reach", "Beacon Meridian", "Atlas Node", "Synapse Haven", "Archive World", "Vector Crown", "Cortex Minor", "Theorem Station", "Oracle Horizon", "Nexus Vault", "Parallax Ascent"];
@@ -306,7 +370,8 @@ function relayoutStarSystems(state: UniverseState) {
 }
 
 function makeCore(now: number): StarSystem {
-  return { id: CORE_SYSTEM_ID, projectKey: "codex:core", identitySource: "core", identityAliases: [], displayName: UNIVERSE_CONFIG.starSystems.coreSystemName, lifecycleState: "stable", visualFlags: [], position: systemPosition(0), radius: .32, color: SYSTEM_COLORS[0], intensity: .85, maturity: 1, planetIds: [], pendingActivityCount: 0, createdAt: iso(now), lastActiveAt: iso(now), totalTasksProcessed: 0, totalSignalsSent: 0, totalSignalsReceived: 0, totalCrossSystemSignals: 0 };
+  const observedAt = iso(now);
+  return { id: CORE_SYSTEM_ID, projectKey: "codex:core", identitySource: "core", identityAliases: [], displayName: UNIVERSE_CONFIG.starSystems.coreSystemName, lifecycleState: "stable", lastNonRemovedLifecycleState: "stable", observedAt, lastObservedAt: observedAt, removedAt: null, observationSource: "core", lastSourceRevision: null, visualFlags: [], position: systemPosition(0), radius: .32, color: SYSTEM_COLORS[0], intensity: .85, maturity: 1, planetIds: [], pendingActivityCount: 0, createdAt: observedAt, lastActiveAt: observedAt, totalTasksProcessed: 0, totalSignalsSent: 0, totalSignalsReceived: 0, totalCrossSystemSignals: 0 };
 }
 
 function makeOrbit(systemPlanetIndex: number, planetId: string, systemId: string): PlanetOrbit {
@@ -366,11 +431,15 @@ export function createUniverse(satellites: Omit<UniverseSatellite, "planetId" | 
   const prime = makePlanet(0, null, core, now);
   core.planetIds.push(prime.id);
   return {
-    version: 3,
-    universe: { id: "codex_universe", seed: "codex-living-balancer-v3", createdAt: iso(now), totalProjects: 1, totalTasks: satellites.length, totalSignals: 0, totalCrossSystemSignals: 0, totalExpansions: 0, focusedSystemId: core.id, focusedPlanetId: prime.id, selectedSystemId: core.id, selectedPlanetId: prime.id, expansionInProgress: false, paused: false },
+    version: 4,
+    universe: { id: "codex_universe", seed: "codex-living-balancer-v4", createdAt: iso(now), totalProjects: 1, totalTasks: satellites.length, totalSignals: 0, totalCrossSystemSignals: 0, totalExpansions: 0, focusedSystemId: core.id, focusedPlanetId: prime.id, selectedSystemId: core.id, selectedPlanetId: prime.id, expansionInProgress: false, paused: false },
     starSystems: [core],
     planets: [prime],
     satellites: satellites.map((satellite, orbitSlot) => ({ ...satellite, planetId: prime.id, previousPlanetId: null, migrationState: "none", orbitSlot, transferHistory: [] })),
+    asteroidBelts: [],
+    spaceStations: [],
+    pulsars: [],
+    activeSystemTransitions: [],
     activeStarFormation: null,
     activeExpansion: null,
     activeMigrations: [],
@@ -396,9 +465,9 @@ function migrateVersion2(value: Record<string, unknown>, now: number): UniverseS
   const focusedPlanetId = typeof oldUniverse.focusedPlanetId === "string" && planetIds.has(oldUniverse.focusedPlanetId) ? oldUniverse.focusedPlanetId : planets[0].id;
   const selectedPlanetId = typeof oldUniverse.selectedPlanetId === "string" && planetIds.has(oldUniverse.selectedPlanetId) ? oldUniverse.selectedPlanetId : focusedPlanetId;
   return repairUniverse({
-    version: 3,
-    universe: { id: "codex_universe", seed: "codex-living-balancer-v3", createdAt: typeof oldUniverse.createdAt === "string" ? oldUniverse.createdAt : iso(now), totalProjects: 1, totalTasks: Number(oldUniverse.totalTasks) || satellites.length, totalSignals: Number(oldUniverse.totalSignals) || 0, totalCrossSystemSignals: 0, totalExpansions: Number(oldUniverse.totalExpansions) || 0, focusedSystemId: core.id, focusedPlanetId, selectedSystemId: core.id, selectedPlanetId, expansionInProgress: Boolean(oldUniverse.expansionInProgress), paused: Boolean(oldUniverse.paused) },
-    starSystems: [core], planets, satellites, activeStarFormation: null,
+    version: 4,
+    universe: { id: "codex_universe", seed: "codex-living-balancer-v4", createdAt: typeof oldUniverse.createdAt === "string" ? oldUniverse.createdAt : iso(now), totalProjects: 1, totalTasks: Number(oldUniverse.totalTasks) || satellites.length, totalSignals: Number(oldUniverse.totalSignals) || 0, totalCrossSystemSignals: 0, totalExpansions: Number(oldUniverse.totalExpansions) || 0, focusedSystemId: core.id, focusedPlanetId, selectedSystemId: core.id, selectedPlanetId, expansionInProgress: Boolean(oldUniverse.expansionInProgress), paused: Boolean(oldUniverse.paused) },
+    starSystems: [core], planets, satellites, asteroidBelts: [], spaceStations: [], pulsars: [], activeSystemTransitions: [], activeStarFormation: null,
     activeExpansion: isRecord(value.activeExpansion) ? value.activeExpansion as unknown as Expansion : null,
     activeMigrations: Array.isArray(value.activeMigrations) ? value.activeMigrations as Migration[] : [],
     activeSignals: [],
@@ -408,23 +477,44 @@ function migrateVersion2(value: Record<string, unknown>, now: number): UniverseS
 
 function validTaskKey(value: unknown): value is TaskKey { return typeof value === "string" && ["think", "search", "tool", "write", "verify"].includes(value); }
 
+function migrateVersion3(value: Record<string, unknown>, now: number): UniverseState | null {
+  if (!Array.isArray(value.starSystems) || !Array.isArray(value.planets) || !Array.isArray(value.satellites) || !isRecord(value.universe) || !isRecord(value.camera)) return null;
+  const observedAt = iso(now);
+  const state = value as unknown as UniverseState;
+  state.version = 4;
+  state.universe.seed = "codex-living-balancer-v4";
+  for (const system of state.starSystems) {
+    const oldState = system.lifecycleState as string;
+    system.lifecycleState = oldState === "latent" ? "nebula" : oldState === "dormant" ? "dormant" : oldState === "forming" || oldState === "stabilizing" ? "forming" : "stable";
+    system.lastNonRemovedLifecycleState = system.lifecycleState === "forming" ? "stable" : system.lifecycleState;
+    system.observedAt = system.createdAt || observedAt;
+    system.lastObservedAt = system.lastActiveAt || observedAt;
+    system.removedAt = null;
+    system.observationSource = system.id === CORE_SYSTEM_ID ? "core" : "version-3-migration";
+    system.lastSourceRevision = null;
+  }
+  state.asteroidBelts = [];
+  state.spaceStations = [];
+  state.pulsars = [];
+  state.activeSystemTransitions = [];
+  return repairUniverse(state, now);
+}
+
 function repairUniverse(state: UniverseState, now: number) {
   const seenSystems = new Set<string>();
   state.starSystems = state.starSystems.filter((system) => system?.id && !seenSystems.has(system.id) && seenSystems.add(system.id));
   let core = state.starSystems.find(({ id }) => id === CORE_SYSTEM_ID);
   if (!core) { core = makeCore(now); state.starSystems.unshift(core); }
-  core.projectKey = "codex:core"; core.identitySource = "core"; core.displayName = UNIVERSE_CONFIG.starSystems.coreSystemName;
+  core.projectKey = "codex:core"; core.identitySource = "core"; core.displayName = UNIVERSE_CONFIG.starSystems.coreSystemName; core.lifecycleState = "stable"; core.lastNonRemovedLifecycleState = "stable"; core.removedAt = null;
   const owners = new Map<string, StarSystem>();
   const redirects = new Map<string, string>();
   for (const system of state.starSystems) {
     if (system.id === CORE_SYSTEM_ID) continue;
     system.identityAliases ??= [];
     const identityKeys = [system.projectKey, ...system.identityAliases].filter(Boolean).map((key) => `identity:${key}`);
-    const name = canonicalProjectName(system.displayName);
-    const existing = identityKeys.map((key) => owners.get(key)).find(Boolean) ?? (name ? owners.get(`name:${name}`) : undefined);
+    const existing = identityKeys.map((key) => owners.get(key)).find(Boolean);
     if (!existing) {
       for (const key of identityKeys) owners.set(key, system);
-      if (name) owners.set(`name:${name}`, system);
       continue;
     }
     redirects.set(system.id, existing.id);
@@ -439,13 +529,14 @@ function repairUniverse(state: UniverseState, now: number) {
     existing.totalCrossSystemSignals += system.totalCrossSystemSignals || 0;
     existing.maturity = Math.max(existing.maturity, system.maturity);
     existing.intensity = Math.max(existing.intensity, system.intensity);
-    if (existing.lifecycleState === "latent" && system.lifecycleState !== "latent") existing.lifecycleState = system.lifecycleState;
+    if (existing.lifecycleState === "nebula" && system.lifecycleState !== "nebula") existing.lifecycleState = system.lifecycleState;
     for (const key of identityKeys) owners.set(key, existing);
   }
   if (redirects.size) {
     const canonicalSystemId = (id: string) => redirects.get(id) ?? id;
     state.starSystems = state.starSystems.filter(({ id }) => !redirects.has(id));
     for (const planet of state.planets) planet.starSystemId = canonicalSystemId(planet.starSystemId);
+    for (const item of [...(state.asteroidBelts ?? []), ...(state.spaceStations ?? []), ...(state.pulsars ?? []), ...(state.activeSystemTransitions ?? [])]) item.systemId = canonicalSystemId(item.systemId);
     if (state.activeStarFormation) state.activeStarFormation.systemId = canonicalSystemId(state.activeStarFormation.systemId);
     for (const signal of state.activeSignals ?? []) { signal.sourceSystemId = canonicalSystemId(signal.sourceSystemId); signal.destinationSystemId = canonicalSystemId(signal.destinationSystemId); }
     state.universe.focusedSystemId = canonicalSystemId(state.universe.focusedSystemId);
@@ -453,6 +544,14 @@ function repairUniverse(state: UniverseState, now: number) {
     state.camera.focusedSystemId = canonicalSystemId(state.camera.focusedSystemId);
   }
   const systemIds = new Set(state.starSystems.map(({ id }) => id));
+  for (const system of state.starSystems) {
+    system.lastNonRemovedLifecycleState ??= system.lifecycleState === "black-hole" ? "stable" : system.lifecycleState === "forming" ? "stable" : system.lifecycleState;
+    system.observedAt ||= system.createdAt || iso(now);
+    system.lastObservedAt ||= system.lastActiveAt || system.observedAt;
+    system.removedAt ??= null;
+    system.observationSource ||= system.id === CORE_SYSTEM_ID ? "core" : "legacy";
+    system.lastSourceRevision ??= null;
+  }
   const planetIds = new Set<string>();
   state.planets = state.planets.filter((planet) => planet?.id && !planetIds.has(planet.id) && planetIds.add(planet.id));
   state.planets.forEach((planet, index) => {
@@ -469,7 +568,6 @@ function repairUniverse(state: UniverseState, now: number) {
     });
   }
   if (!core.planetIds.length) { const prime = makePlanet(state.planets.length, null, core, now); prime.name = "Codex Prime"; state.planets.unshift(prime); core.planetIds.push(prime.id); planetIds.add(prime.id); }
-  relayoutStarSystems(state);
   const satelliteIds = new Set<string>();
   state.satellites = state.satellites.filter((satellite) => satellite?.id && !satelliteIds.has(satellite.id) && planetIds.has(satellite.planetId) && validTaskKey(satellite.taskKey) && satelliteIds.add(satellite.id));
   const aliasOwners = new Map<string, number>();
@@ -477,6 +575,14 @@ function repairUniverse(state: UniverseState, now: number) {
   for (const system of state.starSystems) system.identityAliases = [...new Set(system.identityAliases ?? [])].filter((alias) => aliasOwners.get(alias) === 1).slice(-UNIVERSE_CONFIG.starSystems.maximumIdentityAliases);
   state.activeMigrations = (state.activeMigrations ?? []).filter(({ satelliteId, sourcePlanetId, destinationPlanetId }) => satelliteIds.has(satelliteId) && planetIds.has(sourcePlanetId) && planetIds.has(destinationPlanetId));
   state.activeSignals = (state.activeSignals ?? []).filter(({ sourcePlanetId, destinationPlanetId }) => planetIds.has(sourcePlanetId) && planetIds.has(destinationPlanetId));
+  const uniqueOwned = <T extends { id: string; systemId: string }>(items: T[] | undefined) => {
+    const ids = new Set<string>();
+    return (Array.isArray(items) ? items : []).filter((item) => item?.id && systemIds.has(item.systemId) && !ids.has(item.id) && ids.add(item.id));
+  };
+  state.asteroidBelts = uniqueOwned(state.asteroidBelts).filter((item) => item.sourceId && (item.state === "archived" || item.state === "deleted"));
+  state.spaceStations = uniqueOwned(state.spaceStations).filter((item) => item.integrationId);
+  state.pulsars = uniqueOwned(state.pulsars).filter((item) => item.automationId);
+  state.activeSystemTransitions = uniqueOwned(state.activeSystemTransitions);
   if (state.activeExpansion && (!planetIds.has(state.activeExpansion.parentPlanetId) || !planetIds.has(state.activeExpansion.childPlanetId))) state.activeExpansion = null;
   if (state.activeStarFormation && !systemIds.has(state.activeStarFormation.systemId)) state.activeStarFormation = null;
   state.universe.focusedSystemId = systemIds.has(state.universe.focusedSystemId) ? state.universe.focusedSystemId : CORE_SYSTEM_ID;
@@ -495,7 +601,8 @@ function repairUniverse(state: UniverseState, now: number) {
 export function restoreUniverse(value: unknown, now = Date.now()): UniverseState | null {
   if (!isRecord(value)) return null;
   if (value.version === 2) return migrateVersion2(value, now);
-  if (value.version !== 3 || !Array.isArray(value.starSystems) || !Array.isArray(value.planets) || !Array.isArray(value.satellites) || !isRecord(value.universe) || !isRecord(value.camera)) return null;
+  if (value.version === 3) return migrateVersion3(value, now);
+  if (value.version !== 4 || !Array.isArray(value.starSystems) || !Array.isArray(value.planets) || !Array.isArray(value.satellites) || !isRecord(value.universe) || !isRecord(value.camera)) return null;
   const state = repairUniverse(value as unknown as UniverseState, now);
   advanceUniverse(state, now);
   return state;
@@ -505,29 +612,116 @@ export function resolveProjectSystem(state: UniverseState, input?: ProjectIdenti
   const identity = normalizeProjectIdentity(input);
   if (identity.source === "core") return state.starSystems.find(({ id }) => id === CORE_SYSTEM_ID)!;
   const keys = [identity.projectKey, ...identity.aliases];
-  const existing = state.starSystems.find((system) => keys.includes(system.projectKey) || system.identityAliases.some((alias) => keys.includes(alias)))
-    ?? state.starSystems.find((system) => system.id !== CORE_SYSTEM_ID && canonicalProjectName(system.displayName) === canonicalProjectName(identity.displayName));
+  const existing = state.starSystems.find((system) => keys.includes(system.projectKey) || system.identityAliases.some((alias) => keys.includes(alias)));
   if (existing) {
     existing.identityAliases = [...new Set([...existing.identityAliases, ...keys.filter((key) => key !== existing.projectKey)])].slice(-UNIVERSE_CONFIG.starSystems.maximumIdentityAliases);
-    existing.lastActiveAt = iso(now);
+    if (existing.lifecycleState === "black-hole") {
+      existing.lifecycleState = existing.lastNonRemovedLifecycleState ?? (existing.planetIds.length ? "stable" : "nebula");
+      existing.removedAt = null;
+      state.activeSystemTransitions = state.activeSystemTransitions.filter(({ systemId, kind }) => systemId !== existing.id || kind !== "collapse");
+    }
     return existing;
   }
   const id = `system_${hash(identity.projectKey)}`;
-  const system: StarSystem = { id, projectKey: identity.projectKey, identitySource: identity.source, identityAliases: identity.aliases.slice(-UNIVERSE_CONFIG.starSystems.maximumIdentityAliases), displayName: identity.displayName, lifecycleState: "latent", visualFlags: [], position: systemPosition(state.starSystems.length), radius: .28, color: SYSTEM_COLORS[state.starSystems.length % SYSTEM_COLORS.length], intensity: .76, maturity: 0, planetIds: [], pendingActivityCount: 0, createdAt: iso(now), lastActiveAt: iso(now), totalTasksProcessed: 0, totalSignalsSent: 0, totalSignalsReceived: 0, totalCrossSystemSignals: 0 };
+  const observedAt = iso(now);
+  const system: StarSystem = { id, projectKey: identity.projectKey, identitySource: identity.source, identityAliases: identity.aliases.slice(-UNIVERSE_CONFIG.starSystems.maximumIdentityAliases), displayName: identity.displayName, lifecycleState: "nebula", lastNonRemovedLifecycleState: "nebula", observedAt, lastObservedAt: observedAt, removedAt: null, observationSource: "activity", lastSourceRevision: null, visualFlags: [], position: systemPosition(state.starSystems.length), radius: .28, color: SYSTEM_COLORS[state.starSystems.length % SYSTEM_COLORS.length], intensity: .76, maturity: 0, planetIds: [], pendingActivityCount: 0, createdAt: observedAt, lastActiveAt: observedAt, totalTasksProcessed: 0, totalSignalsSent: 0, totalSignalsReceived: 0, totalCrossSystemSignals: 0 };
   state.starSystems.push(system); state.universe.totalProjects = state.starSystems.length;
   return system;
 }
 
+function observationIsCurrent(lastObservedAt: string, observedAt: string) { return Date.parse(observedAt) >= Date.parse(lastObservedAt); }
+
+export function reconcileUniverseSnapshot(state: UniverseState, snapshot: UniverseObservationSnapshot, now = Date.now()) {
+  const observedAt = Number.isFinite(Date.parse(snapshot.observedAt)) ? snapshot.observedAt : iso(now);
+  for (const project of snapshot.projects ?? []) {
+    const identity = normalizeProjectIdentity(project.identity);
+    if (identity.source === "core") continue;
+    const keys = [identity.projectKey, ...identity.aliases];
+    let system = state.starSystems.find((candidate) => keys.includes(candidate.projectKey) || candidate.identityAliases.some((alias) => keys.includes(alias)));
+    const migratedMatches = state.starSystems.filter((candidate) => candidate.id !== CORE_SYSTEM_ID && candidate.lifecycleState !== "black-hole" && candidate.observationSource === "version-3-migration" && canonicalProjectName(candidate.displayName) === canonicalProjectName(identity.displayName));
+    if (migratedMatches.length === 1 && system !== migratedMatches[0]) {
+      migratedMatches[0].identityAliases = [...new Set([...migratedMatches[0].identityAliases, ...keys])].slice(-UNIVERSE_CONFIG.starSystems.maximumIdentityAliases);
+      repairUniverse(state, now);
+      system = migratedMatches[0];
+    }
+    if (!system) system = resolveProjectSystem(state, project.identity, Date.parse(observedAt));
+    if (!observationIsCurrent(system.lastObservedAt, observedAt)) continue;
+    system.identityAliases = [...new Set([...system.identityAliases, ...keys.filter((key) => key !== system.projectKey)])].slice(-UNIVERSE_CONFIG.starSystems.maximumIdentityAliases);
+    system.displayName = identity.displayName;
+    system.lastObservedAt = observedAt;
+    system.observationSource = snapshot.source;
+    system.lastSourceRevision = snapshot.revision ?? system.lastSourceRevision;
+    if (project.removed && project.removalAuthoritative) {
+      if (system.id === CORE_SYSTEM_ID || system.lifecycleState === "black-hole") continue;
+      system.lastNonRemovedLifecycleState = system.lifecycleState === "forming" ? "stable" : system.lifecycleState;
+      system.lifecycleState = "black-hole";
+      system.removedAt = observedAt;
+      state.activeSystemTransitions = state.activeSystemTransitions.filter(({ systemId }) => systemId !== system.id);
+      state.activeSystemTransitions.push({ id: `transition_collapse_${system.id}`, systemId: system.id, kind: "collapse", startedAt: observedAt });
+    } else if (system.lifecycleState === "black-hole") {
+      system.lifecycleState = system.lastNonRemovedLifecycleState ?? (system.planetIds.length ? "stable" : "nebula");
+      system.removedAt = null;
+      state.activeSystemTransitions = state.activeSystemTransitions.filter(({ systemId }) => systemId !== system.id);
+      state.activeSystemTransitions.push({ id: `transition_recovery_${system.id}`, systemId: system.id, kind: "recovery", startedAt: observedAt });
+    }
+  }
+  for (const chat of snapshot.chats ?? []) {
+    if (!chat.sourceId) continue;
+    const system = resolveProjectSystem(state, chat.project, Date.parse(observedAt));
+    const id = `asteroid_${hash(`${system.id}:${chat.sourceId}`)}`;
+    const existing = state.asteroidBelts.find((item) => item.id === id);
+    const changedAt = chat.changedAt && Number.isFinite(Date.parse(chat.changedAt)) ? chat.changedAt : observedAt;
+    if (existing && !observationIsCurrent(existing.changedAt, changedAt)) continue;
+    if (chat.state === "active") {
+      if (existing?.archivedSatellite && !state.satellites.some(({ id: satelliteId }) => satelliteId === existing.archivedSatellite!.id)) state.satellites.push(existing.archivedSatellite);
+      state.asteroidBelts = state.asteroidBelts.filter((item) => item.id !== id);
+      continue;
+    }
+    if (chat.state === "deleted" && !UNIVERSE_CONFIG.universeObjects.deletedChatTombstonesEnabled) continue;
+    const satellite = state.satellites.find((item) => item.id === chat.satelliteId || item.sourceId === chat.sourceId);
+    if (satellite) state.satellites = state.satellites.filter(({ id: satelliteId }) => satelliteId !== satellite.id);
+    const asteroid: Asteroid = { id, sourceId: chat.sourceId, systemId: system.id, state: chat.state, title: chat.title?.trim() || "Archived chat", lastActiveAt: chat.lastActiveAt ?? observedAt, changedAt, recoverable: chat.state === "archived", archivedSatellite: satellite ?? existing?.archivedSatellite };
+    if (existing) Object.assign(existing, asteroid); else state.asteroidBelts.push(asteroid);
+  }
+  for (const station of snapshot.stations ?? []) {
+    if (!station.integrationId) continue;
+    const system = resolveProjectSystem(state, station.project, Date.parse(observedAt));
+    const id = `station_${hash(`${station.kind}:${station.integrationId}:${system.id}`)}`;
+    const existing = state.spaceStations.find((item) => item.id === id);
+    if (existing && !observationIsCurrent(existing.lastObservedAt, observedAt)) continue;
+    const value: SpaceStation = { id, systemId: system.id, kind: station.kind, integrationId: station.integrationId, displayName: station.displayName, status: station.status, firstObservedAt: existing?.firstObservedAt ?? observedAt, lastObservedAt: observedAt, lastUsedAt: station.lastUsedAt ?? existing?.lastUsedAt ?? null };
+    if (existing) Object.assign(existing, value); else state.spaceStations.push(value);
+  }
+  for (const pulsar of snapshot.pulsars ?? []) {
+    if (!pulsar.automationId) continue;
+    const system = resolveProjectSystem(state, pulsar.project, Date.parse(observedAt));
+    const id = `pulsar_${hash(`${pulsar.automationId}:${system.id}`)}`;
+    const existing = state.pulsars.find((item) => item.id === id);
+    if (existing && !observationIsCurrent(existing.lastObservedAt, observedAt)) continue;
+    const value: Pulsar = { id, systemId: system.id, automationId: pulsar.automationId, displayName: pulsar.displayName, schedule: pulsar.schedule, status: pulsar.status, firstObservedAt: existing?.firstObservedAt ?? observedAt, lastObservedAt: observedAt, lastRunAt: pulsar.lastRunAt ?? existing?.lastRunAt ?? null };
+    if (existing) Object.assign(existing, value); else state.pulsars.push(value);
+  }
+  repairUniverse(state, now);
+  return state;
+}
+
 function beginStarFormation(state: UniverseState, system: StarSystem, now: number) {
-  if (system.lifecycleState !== "latent" || system.pendingActivityCount < UNIVERSE_CONFIG.starSystems.minimumActivitiesToMaterialize) return;
+  if (system.lifecycleState !== "nebula" || system.pendingActivityCount < UNIVERSE_CONFIG.starSystems.minimumActivitiesToMaterialize) return;
   system.lifecycleState = "forming";
-  if (!system.planetIds.length) { const planet = makePlanet(state.planets.length, null, system, now); state.planets.push(planet); system.planetIds.push(planet.id); relayoutStarSystems(state); }
+  system.lastNonRemovedLifecycleState = "stable";
+  if (!system.planetIds.length) {
+    const position = { ...system.position };
+    const planet = makePlanet(state.planets.length, null, system, now); state.planets.push(planet); system.planetIds.push(planet.id); relayoutStarSystems(state);
+    system.position = position; planet.position = position;
+  }
   if (state.activeStarFormation) {
     system.lifecycleState = "stable";
     for (const planet of state.planets.filter(({ starSystemId }) => starSystemId === system.id)) { planet.lifecycleState = "stable"; planet.maturity = Math.max(.35, planet.maturity); }
     return;
   }
   state.activeStarFormation = { id: `formation_${system.id}_${now}`, systemId: system.id, phase: "spark", startedAt: iso(now), durationMs: UNIVERSE_CONFIG.starSystems.formationDurationMs, progress: 0 };
+  state.activeSystemTransitions = state.activeSystemTransitions.filter(({ systemId }) => systemId !== system.id);
+  state.activeSystemTransitions.push({ id: `transition_formation_${system.id}`, systemId: system.id, kind: "formation", startedAt: iso(now) });
 }
 
 export function beginExpansion(state: UniverseState, parentPlanetId: string, now = Date.now()): Planet | null {
@@ -575,11 +769,13 @@ export function advanceUniverse(state: UniverseState, now = Date.now()) {
     if (!system) state.activeStarFormation = null;
     else if (formation.progress >= 1) {
       system.lifecycleState = "stable";
+      system.lastNonRemovedLifecycleState = "stable";
       for (const planet of state.planets.filter(({ starSystemId }) => starSystemId === system.id)) { planet.lifecycleState = "stable"; planet.maturity = Math.max(.35, planet.maturity); }
       state.activeStarFormation = null;
-    } else if (formation.progress >= .72) system.lifecycleState = "stabilizing";
+      state.activeSystemTransitions = state.activeSystemTransitions.filter(({ systemId, kind }) => systemId !== system.id || kind !== "formation");
+    }
   } else {
-    const ready = state.starSystems.find((system) => system.lifecycleState === "latent" && system.pendingActivityCount >= UNIVERSE_CONFIG.starSystems.minimumActivitiesToMaterialize);
+    const ready = state.starSystems.find((system) => system.lifecycleState === "nebula" && system.pendingActivityCount >= UNIVERSE_CONFIG.starSystems.minimumActivitiesToMaterialize);
     if (ready) beginStarFormation(state, ready, now);
   }
 
@@ -618,18 +814,17 @@ export function advanceUniverse(state: UniverseState, now = Date.now()) {
   for (let index = state.activeSignals.length - 1; index >= 0; index -= 1) {
     const signal = state.activeSignals[index]; signal.progress = Math.max(0, Math.min(1, (now - Date.parse(signal.startedAt)) / signal.durationMs)); if (signal.progress >= 1) state.activeSignals.splice(index, 1);
   }
-  for (const system of state.starSystems) if (system.lifecycleState === "communicating" && !state.activeSignals.some((signal) => signal.sourceSystemId === system.id || signal.destinationSystemId === system.id)) system.lifecycleState = "active";
   const dormantBefore = now - UNIVERSE_CONFIG.starSystems.dormantAfterDays * 86_400_000;
-  for (const system of state.starSystems) if (system.id !== CORE_SYSTEM_ID && !["latent", "forming", "stabilizing"].includes(system.lifecycleState) && Date.parse(system.lastActiveAt) < dormantBefore) system.lifecycleState = "dormant";
+  for (const system of state.starSystems) if (system.id !== CORE_SYSTEM_ID && system.lifecycleState === "stable" && Date.parse(system.lastActiveAt) < dormantBefore) { system.lifecycleState = "dormant"; system.lastNonRemovedLifecycleState = "dormant"; }
 }
 
 export function addSatellite(state: UniverseState, satellite: Omit<UniverseSatellite, "planetId" | "previousPlanetId" | "migrationState" | "orbitSlot" | "transferHistory">, project?: ProjectIdentityInput | null, now = Date.now()) {
   if (state.satellites.some(({ id }) => id === satellite.id)) return null;
   const system = resolveProjectSystem(state, project, now);
   system.pendingActivityCount += 1; system.totalTasksProcessed += 1; system.lastActiveAt = iso(now); system.maturity = Math.min(1, system.totalTasksProcessed / 200);
-  if (system.lifecycleState === "stable" || system.lifecycleState === "dormant") system.lifecycleState = "active";
+  if (system.lifecycleState === "dormant") { system.lifecycleState = "stable"; system.lastNonRemovedLifecycleState = "stable"; }
   beginStarFormation(state, system, now);
-  const destinationSystem = system.lifecycleState === "latent" ? state.starSystems.find(({ id }) => id === CORE_SYSTEM_ID)! : system;
+  const destinationSystem = system.lifecycleState === "nebula" || system.lifecycleState === "black-hole" ? state.starSystems.find(({ id }) => id === CORE_SYSTEM_ID)! : system;
   const stable = state.planets.filter((planet) => planet.starSystemId === destinationSystem.id && !["forming", "stabilizing", "launching"].includes(planet.lifecycleState));
   const planet = stable.sort((a, b) => planetPopulation(state, a.id) - planetPopulation(state, b.id))[0] ?? state.planets.find(({ id }) => id === destinationSystem.planetIds[0]) ?? state.planets[0];
   const stored = { ...satellite, planetId: planet.id, previousPlanetId: null, migrationState: "none" as const, orbitSlot: planetPopulation(state, planet.id), transferHistory: [] };
@@ -647,8 +842,8 @@ function addSignal(state: UniverseState, source: Planet, destination: Planet, ta
   if (excess > 0) { const index = state.activeSignals.findIndex(({ crossSystem: cross }) => cross === crossSystem); state.activeSignals.splice(index, excess); }
   source.totalSignalsSent += 1; destination.totalSignalsReceived += 1; source.lifecycleState = "communicating"; destination.lifecycleState = "communicating"; state.universe.totalSignals += 1;
   const sourceSystem = state.starSystems.find(({ id }) => id === source.starSystemId); const destinationSystem = state.starSystems.find(({ id }) => id === destination.starSystemId);
-  if (sourceSystem) { sourceSystem.totalSignalsSent += 1; sourceSystem.lifecycleState = "communicating"; }
-  if (destinationSystem) { destinationSystem.totalSignalsReceived += 1; destinationSystem.lifecycleState = "communicating"; }
+  if (sourceSystem) sourceSystem.totalSignalsSent += 1;
+  if (destinationSystem) destinationSystem.totalSignalsReceived += 1;
   if (crossSystem) { state.universe.totalCrossSystemSignals += 1; if (sourceSystem) sourceSystem.totalCrossSystemSignals += 1; if (destinationSystem) destinationSystem.totalCrossSystemSignals += 1; }
   return signal;
 }
@@ -672,26 +867,41 @@ function systemSummary(state: UniverseState, system: StarSystem): StarSystemSumm
   const planetIds = new Set(system.planetIds);
   const counts = new Map<TaskKey, number>();
   for (const satellite of state.satellites) if (planetIds.has(satellite.planetId)) counts.set(satellite.taskKey, (counts.get(satellite.taskKey) ?? 0) + 1);
-  return { ...system, satelliteCount: systemPopulation(state, system.id), dominantActivityTypes: [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([key]) => key) };
+  return { ...system, satelliteCount: systemPopulation(state, system.id), asteroidCount: state.asteroidBelts.filter(({ systemId }) => systemId === system.id).length, stationCount: state.spaceStations.filter(({ systemId }) => systemId === system.id).length, pulsarCount: state.pulsars.filter(({ systemId }) => systemId === system.id).length, dominantActivityTypes: [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([key]) => key) };
 }
 
 export function summarizeUniverse(state: UniverseState): UniverseSummary {
-  const systems = state.starSystems.filter(({ lifecycleState }) => lifecycleState !== "latent").map((system) => systemSummary(state, system));
+  const systems = state.starSystems.map((system) => systemSummary(state, system));
   const selectedSystemId = state.universe.selectedSystemId ?? state.universe.focusedSystemId;
   const selectedSystem = systems.find(({ id }) => id === selectedSystemId) ?? systems[0] ?? null;
   const selectedSystemPlanets = selectedSystem ? state.planets.filter(({ starSystemId }) => starSystemId === selectedSystem.id) : [];
   const selectedPlanet = state.planets.find(({ id }) => id === state.universe.selectedPlanetId) ?? null;
-  return { systemCount: systems.length, planetCount: state.planets.length, satelliteCount: state.satellites.length, activeSignals: state.activeSignals.length, activeMigrations: state.activeMigrations.length, systems, selectedSystem, selectedSystemPlanets, selectedSystemPopulation: selectedSystem?.satelliteCount ?? 0, selectedPlanet, selectedPlanetSystem: selectedPlanet ? state.starSystems.find(({ id }) => id === selectedPlanet.starSystemId) ?? null : null, selectedPopulation: selectedPlanet ? planetPopulation(state, selectedPlanet.id) : 0, formation: state.activeStarFormation, expansion: state.activeExpansion, cameraMode: state.camera.mode };
+  return { systemCount: systems.length, planetCount: state.planets.length, satelliteCount: state.satellites.length, activeSignals: state.activeSignals.length, activeMigrations: state.activeMigrations.length, systems, selectedSystem, selectedSystemPlanets, selectedSystemPopulation: selectedSystem?.satelliteCount ?? 0, selectedPlanet, selectedPlanetSystem: selectedPlanet ? state.starSystems.find(({ id }) => id === selectedPlanet.starSystemId) ?? null : null, selectedPopulation: selectedPlanet ? planetPopulation(state, selectedPlanet.id) : 0, formation: state.activeStarFormation, expansion: state.activeExpansion, cameraMode: state.camera.mode, asteroidCount: state.asteroidBelts.length, stationCount: state.spaceStations.length, pulsarCount: state.pulsars.length };
 }
 
 export function assertUniverseIntegrity(state: UniverseState) {
   const systemIds = new Set(state.starSystems.map(({ id }) => id));
   if (systemIds.size !== state.starSystems.length || state.starSystems.filter(({ id }) => id === CORE_SYSTEM_ID).length !== 1) throw new Error("Invalid star-system registry");
+  const core = state.starSystems.find(({ id }) => id === CORE_SYSTEM_ID)!;
+  if (core.lifecycleState !== "stable" || core.removedAt) throw new Error("Codex Core cannot collapse");
   const planetIds = new Set(state.planets.map(({ id }) => id));
   if (planetIds.size !== state.planets.length) throw new Error("Duplicate planet ID");
   for (const planet of state.planets) if (!systemIds.has(planet.starSystemId) || state.starSystems.filter(({ planetIds: ids }) => ids.includes(planet.id)).length !== 1) throw new Error("Planet has no unique star-system owner");
   const aliases = new Set<string>();
-  for (const system of state.starSystems) for (const alias of system.identityAliases) { if (aliases.has(alias)) throw new Error("Identity alias has multiple owners"); aliases.add(alias); }
+  for (const system of state.starSystems) {
+    for (const alias of [system.projectKey, ...system.identityAliases]) { if (aliases.has(alias)) throw new Error("Project identity has multiple owners"); aliases.add(alias); }
+    if (system.lifecycleState === "black-hole" && !system.lastNonRemovedLifecycleState) throw new Error("Black hole has no recovery state");
+  }
   const satelliteIds = new Set<string>();
   for (const satellite of state.satellites) { if (satelliteIds.has(satellite.id)) throw new Error("Duplicate satellite ID"); if (!planetIds.has(satellite.planetId)) throw new Error("Satellite has no planet owner"); satelliteIds.add(satellite.id); }
+  for (const [kind, items] of [["asteroid", state.asteroidBelts.map((item) => ({ ...item, source: item.sourceId }))], ["station", state.spaceStations.map((item) => ({ ...item, source: item.integrationId }))], ["pulsar", state.pulsars.map((item) => ({ ...item, source: item.automationId }))]] as const) {
+    const keys = new Set<string>();
+    for (const item of items) {
+      if (!systemIds.has(item.systemId)) throw new Error(`${kind} has no system owner`);
+      const key = `${item.systemId}:${item.source}`;
+      if (keys.has(key)) throw new Error(`Duplicate ${kind} source ID`);
+      keys.add(key);
+    }
+  }
+  for (const transition of state.activeSystemTransitions) if (!systemIds.has(transition.systemId)) throw new Error("Transition has no system owner");
 }

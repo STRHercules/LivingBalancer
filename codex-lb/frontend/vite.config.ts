@@ -45,6 +45,10 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      "/api/codex-observer": {
+        target: "http://127.0.0.1:2460",
+        rewrite: (requestPath) => requestPath.replace(/^\/api\/codex-observer/, ""),
+      },
       "/api": proxyTarget,
       "/v1": proxyTarget,
       "/backend-api": proxyTarget,

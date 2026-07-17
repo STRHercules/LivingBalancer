@@ -17,7 +17,7 @@ describe("Living Codex storage", () => {
 
   it("falls back to older valid data and keeps a restorable copy before topology changes", () => {
     const legacy = createUniverse([satellite], 0);
-    const v2 = { ...legacy, version: 2, universe: { ...legacy.universe }, planets: legacy.planets.map(({ starSystemId: _, orbit: __, ...planet }) => planet), camera: { ...legacy.camera } };
+    const v2 = { ...legacy, version: 2, universe: { ...legacy.universe }, planets: legacy.planets.map((planet) => Object.fromEntries(Object.entries(planet).filter(([key]) => key !== "starSystemId" && key !== "orbit"))), camera: { ...legacy.camera } };
     localStorage.setItem(UNIVERSE_STORAGE_KEY, "{broken");
     localStorage.setItem(VERSION_2_UNIVERSE_STORAGE_KEY, JSON.stringify(v2));
     expect(loadUniverseFromStorage(localStorage, 1)?.satellites).toHaveLength(1);

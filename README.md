@@ -3,8 +3,11 @@
 CodexLB with the existing dashboard and controls intact, plus the living Codex dashboard from `indexv2.html` and TokDash telemetry.
 
 ```powershell
+& .\scripts\start-living-codex-observer.ps1
 docker compose -f docker-compose.living.yml up --build
 ```
+
+The local observer connects to Codex app-server and supplies project IDs, archived-thread metadata, installed plugins, MCP status, and recurring automation metadata to Living Codex. It retains no prompt, response, tool-payload, credential, or file content. Run the observer launcher again after a Windows restart; it exits immediately when the observer is already running.
 
 - Living dashboard: <http://localhost:5173/dashboard>
 - Local usage: <http://localhost:5173/local-usage>

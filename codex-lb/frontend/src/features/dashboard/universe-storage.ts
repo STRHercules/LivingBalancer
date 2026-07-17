@@ -1,6 +1,7 @@
 import {
   UNIVERSE_STORAGE_KEY,
   VERSION_2_UNIVERSE_STORAGE_KEY,
+  VERSION_3_UNIVERSE_STORAGE_KEY,
   restoreUniverse,
   type UniverseState,
 } from "./universe";
@@ -14,7 +15,7 @@ const MAX_BACKUPS = 10;
 type StoredBackup = { createdAt: string; universe: UniverseState };
 export type UniverseBackupSummary = { createdAt: string; systemCount: number; planetCount: number; satelliteCount: number };
 
-const topology = (state: UniverseState) => `${state.starSystems.length}:${state.planets.length}`;
+const topology = (state: UniverseState) => `${state.starSystems.length}:${state.planets.length}:${state.asteroidBelts.length}:${state.spaceStations.length}:${state.pulsars.length}`;
 
 function parseUniverse(raw: string | null, now = Date.now()) {
   if (!raw) return null;
@@ -51,7 +52,7 @@ function archiveRawUniverse(storage: Storage, raw: string | null, now = Date.now
 }
 
 export function loadUniverseFromStorage(storage: Storage, now = Date.now()) {
-  for (const key of [UNIVERSE_STORAGE_KEY, VERSION_2_UNIVERSE_STORAGE_KEY]) {
+  for (const key of [UNIVERSE_STORAGE_KEY, VERSION_3_UNIVERSE_STORAGE_KEY, VERSION_2_UNIVERSE_STORAGE_KEY]) {
     const universe = parseUniverse(storage.getItem(key), now);
     if (universe) return universe;
   }

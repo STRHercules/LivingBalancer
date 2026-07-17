@@ -9,6 +9,7 @@ import {
   evaluateExpansion,
   planetPositionAt,
   planetPositionOnOrbit,
+  reconcileUniverseSnapshot,
   resolveProjectSystem,
   routeCrossSystemSignal,
   routeSignal,
@@ -20,6 +21,7 @@ import {
   type TaskKey,
   type UniverseSatellite,
   type UniverseState,
+  type UniverseObservationSnapshot,
   type UniverseSummary,
 } from "../universe";
 import { loadUniverseFromStorage, saveUniverseToStorage } from "../universe-storage";
@@ -45,9 +47,10 @@ type Satellite = UniverseSatellite & {
 type Packet = { source: Point3D; color: string; startedAt: number; duration: number; curveX: number; curveY: number; size: number };
 type Pulse = { x: number; y: number; color: string; startedAt: number; duration: number };
 type TaskConfig = { label: string; title: string; detail: string; color: string; duration: number; packets: number };
-type ActiveTask = { key: TaskKey; config: TaskConfig; startedAt: number; duration: number; nextPacketAt: number; projectIdentity?: ProjectIdentityInput | null };
-type QueuedTask = { taskKey: TaskKey; label?: string; taskSeed?: string; projectIdentity?: ProjectIdentityInput | null };
+type ActiveTask = { key: TaskKey; config: TaskConfig; startedAt: number; duration: number; nextPacketAt: number; projectIdentity?: ProjectIdentityInput | null; sourceId?: string };
+type QueuedTask = { taskKey: TaskKey; label?: string; taskSeed?: string; projectIdentity?: ProjectIdentityInput | null; sourceId?: string };
 export type ChatActivitySignal = { sessionId: string; eventId?: string; activityKind: ActivityKind; eventLabel?: string; projectIdentity?: ProjectIdentityInput | null };
+export type PulsarObservation = { automationId: string; displayName: string; schedule: string; status: "healthy" | "running" | "failed" | "paused" | "removed"; lastRunAt?: string | null };
 type ActiveChat = ChatActivitySignal & { systemId: string };
 export type SatelliteSummary = { id: string; label: string; type: string; color: string };
 
@@ -124,13 +127,16 @@ function loadUniverse(): UniverseState {
   return universe;
 }
 
-export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", eventLabel, projectIdentity, chatActivities = [], model = "Waiting for traffic", context = "living-codex / globe", onSatellitesChange, onUniverseChange }: {
+export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", eventLabel, projectIdentity, observedProjects = [], observation = null, chatActivities = [], pulsars = [], model = "Waiting for traffic", context = "living-codex / globe", onSatellitesChange, onUniverseChange }: {
   activity?: number;
   eventId?: string;
   activityKind?: ActivityKind;
   eventLabel?: string;
   projectIdentity?: ProjectIdentityInput | null;
+  observedProjects?: ProjectIdentityInput[];
+  observation?: UniverseObservationSnapshot | null;
   chatActivities?: ChatActivitySignal[];
+  pulsars?: PulsarObservation[];
   model?: string;
   context?: string;
   onSatellitesChange?: (satellites: SatelliteSummary[]) => void;
@@ -154,11 +160,11 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
   const detailRef = useRef<HTMLDivElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
   const autoRef = useRef<HTMLButtonElement>(null);
-  const signalRef = useRef({ activity, eventId, activityKind, eventLabel, projectIdentity, chatActivities });
+  const signalRef = useRef({ activity, eventId, activityKind, eventLabel, projectIdentity, observedProjects, observation, chatActivities, pulsars });
 
   useEffect(() => {
-    signalRef.current = { activity, eventId, activityKind, eventLabel, projectIdentity, chatActivities };
-  }, [activity, eventId, activityKind, eventLabel, projectIdentity, chatActivities]);
+    signalRef.current = { activity, eventId, activityKind, eventLabel, projectIdentity, observedProjects, observation, chatActivities, pulsars };
+  }, [activity, eventId, activityKind, eventLabel, projectIdentity, observedProjects, observation, chatActivities, pulsars]);
 
   useEffect(() => {
     const stage = stageRef.current;
@@ -175,6 +181,10 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     const ringSprites = new Map<string, { image: HTMLCanvasElement; center: number; radius: number }>();
     const trailSprites = new Map<string, { image: HTMLCanvasElement; padding: number; length: number }>();
     const rocketSprites = new Map<number, HTMLCanvasElement>();
+    const nebulaSprites = new Map<string, HTMLCanvasElement>();
+    const blackHoleSprites = new Map<number, HTMLCanvasElement>();
+    const asteroidSprites = new Map<string, HTMLCanvasElement>();
+    const stationSprites = new Map<string, HTMLCanvasElement>();
     const knowledge: Satellite[] = [];
     const packets: Packet[] = [];
     const pulses: Pulse[] = [];
@@ -225,10 +235,24 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     let dragMoved = false;
     let lastUniverseSync = 0;
     let persistTimer: number | undefined;
+    let lastObservationSignature = "";
     const planetScreens = new Map<string, { x: number; y: number; radius: number; z: number }>();
     const starScreens = new Map<string, { x: number; y: number; radius: number; z: number }>();
+    const stationScreens = new Map<string, { x: number; y: number; radius: number; z: number; angle: number }>();
+    const infrastructureScreens = new Map<string, { x: number; y: number; color: string; type: string; label: string }>();
     const planetPositions = new Map<string, Point3D>();
     const orbitScreens = new Map<string, Array<{ x: number; y: number }>>();
+    const asteroidBeltsBySystem = new Map<string, UniverseState["asteroidBelts"]>();
+    const stationsBySystem = new Map<string, UniverseState["spaceStations"]>();
+    const pulsarsBySystem = new Map<string, UniverseState["pulsars"]>();
+
+    const refreshInfrastructureIndex = () => {
+      asteroidBeltsBySystem.clear(); stationsBySystem.clear(); pulsarsBySystem.clear();
+      for (const asteroid of universe.asteroidBelts) { const items = asteroidBeltsBySystem.get(asteroid.systemId); if (items) items.push(asteroid); else asteroidBeltsBySystem.set(asteroid.systemId, [asteroid]); }
+      for (const station of universe.spaceStations) { const items = stationsBySystem.get(station.systemId); if (items) items.push(station); else stationsBySystem.set(station.systemId, [station]); }
+      for (const pulsar of universe.pulsars) { const items = pulsarsBySystem.get(pulsar.systemId); if (items) items.push(pulsar); else pulsarsBySystem.set(pulsar.systemId, [pulsar]); }
+    };
+    refreshInfrastructureIndex();
 
     const syncUniverse = () => {
       onSatellitesChange?.(universe.satellites.map((satellite) => ({ id: satellite.id, label: satellite.naming.displayName, type: TASKS[satellite.taskKey].label, color: satellite.color })));
@@ -408,6 +432,78 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       ctx.drawImage(image, -32, -24, 64, 48);
     };
 
+    const drawCachedNebula = (x: number, y: number, radius: number, color: string, angle: number) => {
+      const scale = clamp(devicePixelRatio || 1, 1, 2);
+      const key = `${color}:${scale}`;
+      let image = nebulaSprites.get(key);
+      if (!image) {
+        image = document.createElement("canvas"); image.width = Math.ceil(128 * scale); image.height = Math.ceil(80 * scale);
+        const spriteContext = image.getContext("2d");
+        if (spriteContext) {
+          spriteContext.setTransform(scale, 0, 0, scale, 0, 0);
+          for (const [cloudX, cloudY, cloudRadius, alpha] of [[64, 40, 38, .19], [43, 36, 27, .13], [84, 44, 31, .11]] as const) {
+            const cloud = spriteContext.createRadialGradient(cloudX, cloudY, 0, cloudX, cloudY, cloudRadius);
+            cloud.addColorStop(0, rgba(color, alpha)); cloud.addColorStop(.52, rgba(color, alpha * .48)); cloud.addColorStop(1, rgba(color, 0));
+            spriteContext.fillStyle = cloud; spriteContext.fillRect(cloudX - cloudRadius, cloudY - cloudRadius, cloudRadius * 2, cloudRadius * 2);
+          }
+        }
+        nebulaSprites.set(key, image);
+      }
+      ctx.save(); ctx.translate(x, y); ctx.rotate(angle); ctx.drawImage(image, -radius * 4.8, -radius * 2.8, radius * 9.6, radius * 5.6); ctx.restore();
+    };
+
+    const drawCachedBlackHole = (x: number, y: number, radius: number, angle: number) => {
+      const scale = clamp(devicePixelRatio || 1, 1, 2);
+      let image = blackHoleSprites.get(scale);
+      if (!image) {
+        image = document.createElement("canvas"); image.width = Math.ceil(120 * scale); image.height = Math.ceil(72 * scale);
+        const spriteContext = image.getContext("2d");
+        if (spriteContext) {
+          spriteContext.setTransform(scale, 0, 0, scale, 0, 0); spriteContext.translate(60, 36);
+          for (const [width, alpha] of [[7, .12], [4, .24], [1.4, .68]] as const) { spriteContext.beginPath(); spriteContext.ellipse(0, 0, 48, 14, 0, 0, Math.PI * 2); spriteContext.strokeStyle = rgba("#ffac5c", alpha); spriteContext.lineWidth = width; spriteContext.stroke(); }
+          const horizon = spriteContext.createRadialGradient(0, 0, 7, 0, 0, 19); horizon.addColorStop(0, "rgba(0,0,0,1)"); horizon.addColorStop(.58, "rgba(0,0,0,.99)"); horizon.addColorStop(1, "rgba(0,0,0,0)");
+          spriteContext.fillStyle = horizon; spriteContext.beginPath(); spriteContext.arc(0, 0, 19, 0, Math.PI * 2); spriteContext.fill();
+        }
+        blackHoleSprites.set(scale, image);
+      }
+      ctx.save(); ctx.translate(x, y); ctx.rotate(angle); ctx.drawImage(image, -radius * 3.3, -radius * 2, radius * 6.6, radius * 4); ctx.restore();
+    };
+
+    const drawCachedAsteroidBelt = (x: number, y: number, radius: number, particles: number, alpha: number, angle: number) => {
+      const scale = clamp(devicePixelRatio || 1, 1, 2);
+      const key = `${particles}:${scale}`;
+      let image = asteroidSprites.get(key);
+      if (!image) {
+        image = document.createElement("canvas"); image.width = Math.ceil(140 * scale); image.height = Math.ceil(52 * scale);
+        const spriteContext = image.getContext("2d");
+        if (spriteContext) {
+          spriteContext.setTransform(scale, 0, 0, scale, 0, 0); spriteContext.translate(70, 26);
+          spriteContext.strokeStyle = rgba("#9ca6ad", .55); spriteContext.beginPath(); spriteContext.ellipse(0, 0, 62, 19, 0, 0, Math.PI * 2); spriteContext.stroke();
+          for (let index = 0; index < particles; index += 1) { const particleAngle = index / particles * Math.PI * 2; const jitter = (seededNoise(index + particles * 13) - .5) * 5; const size = 1 + seededNoise(index + 91) * 1.2; spriteContext.fillStyle = rgba("#c2ccd2", .45 + index % 3 * .14); spriteContext.fillRect(Math.cos(particleAngle) * (62 + jitter) - size / 2, Math.sin(particleAngle) * (19 + jitter * .25) - size / 2, size, size); }
+        }
+        asteroidSprites.set(key, image);
+      }
+      ctx.save(); ctx.globalAlpha *= alpha; ctx.translate(x, y); ctx.rotate(angle); ctx.drawImage(image, -radius * 5.6, -radius * 2.1, radius * 11.2, radius * 4.2); ctx.restore();
+    };
+
+    const drawCachedStation = (x: number, y: number, radius: number, color: string, angle: number) => {
+      const scale = clamp(devicePixelRatio || 1, 1, 2);
+      const key = `${color}:${scale}`;
+      let image = stationSprites.get(key);
+      if (!image) {
+        image = document.createElement("canvas"); image.width = Math.ceil(40 * scale); image.height = Math.ceil(28 * scale);
+        const spriteContext = image.getContext("2d");
+        if (spriteContext) {
+          spriteContext.setTransform(scale, 0, 0, scale, 0, 0); spriteContext.translate(20, 14); spriteContext.strokeStyle = color; spriteContext.fillStyle = "rgba(8,12,15,.94)"; spriteContext.shadowColor = color; spriteContext.shadowBlur = 4;
+          spriteContext.fillRect(-6, -4, 12, 8); spriteContext.strokeRect(-6, -4, 12, 8); spriteContext.shadowBlur = 0;
+          spriteContext.strokeRect(-17, -5, 8, 10); spriteContext.strokeRect(9, -5, 8, 10); spriteContext.beginPath(); spriteContext.moveTo(-9, 0); spriteContext.lineTo(9, 0); spriteContext.moveTo(0, -4); spriteContext.lineTo(0, -10); spriteContext.lineTo(4, -12); spriteContext.stroke();
+          spriteContext.fillStyle = color; spriteContext.fillRect(-1, -1, 2, 2);
+        }
+        stationSprites.set(key, image);
+      }
+      ctx.save(); ctx.translate(x, y); ctx.rotate(angle); ctx.drawImage(image, -radius * 2, -radius * 1.4, radius * 4, radius * 2.8); ctx.restore();
+    };
+
     const makeSatellite = (taskKey: TaskKey, taskSeed: string, color: string, active = true, stored?: UniverseSatellite): Satellite => {
       const naming = stored?.naming ?? generateUniqueSatelliteNameMetadata({
         type: SATELLITE_TYPE_FOR_TASK[taskKey],
@@ -473,15 +569,15 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       progressRef.current?.style.setProperty("--active-color", config.color);
     };
 
-    const startTask = (taskKey: TaskKey, label?: string, taskSeed = `${taskKey}-${nextCreationIndex}`, project?: ProjectIdentityInput | null) => {
+    const startTask = (taskKey: TaskKey, label?: string, taskSeed = `${taskKey}-${nextCreationIndex}`, project?: ProjectIdentityInput | null, sourceId?: string) => {
       if (activeTask) {
-        queue.push({ taskKey, label, taskSeed, projectIdentity: project });
+        queue.push({ taskKey, label, taskSeed, projectIdentity: project, sourceId });
         if (queue.length > 24) queue.shift();
         syncQueue();
         return;
       }
       const config = { ...TASKS[taskKey], ...(label ? { title: label } : {}) };
-      activeTask = { key: taskKey, config, startedAt: performance.now(), duration: reducedMotion ? Math.max(2100, config.duration * 0.7) : config.duration, nextPacketAt: performance.now(), projectIdentity: project };
+      activeTask = { key: taskKey, config, startedAt: performance.now(), duration: reducedMotion ? Math.max(2100, config.duration * 0.7) : config.duration, nextPacketAt: performance.now(), projectIdentity: project, sourceId };
       activeSatellite = makeSatellite(taskKey, taskSeed, config.color);
       routeSignal(universe, taskKey);
       progress = 0;
@@ -492,7 +588,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     const finishTask = () => {
       if (!activeTask || !activeSatellite) return;
       const sourceSystemId = universe.universe.selectedSystemId ?? universe.universe.focusedSystemId;
-      const added = addSatellite(universe, { id: activeSatellite.id, taskKey: activeSatellite.taskKey, naming: activeSatellite.naming, color: activeSatellite.color, createdAtIso: activeSatellite.createdAtIso }, activeTask.projectIdentity);
+      const added = addSatellite(universe, { id: activeSatellite.id, taskKey: activeSatellite.taskKey, naming: activeSatellite.naming, color: activeSatellite.color, createdAtIso: activeSatellite.createdAtIso, sourceId: activeTask.sourceId }, activeTask.projectIdentity);
       const stored = universe.satellites.find(({ id }) => id === activeSatellite?.id);
       if (stored) Object.assign(activeSatellite, stored);
       const destinationSystemId = added ? universe.planets.find(({ id }) => id === added.planetId)?.starSystemId : null;
@@ -514,7 +610,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       if (queue.length) {
         const next = queue.shift()!;
         syncQueue();
-        window.setTimeout(() => startTask(next.taskKey, next.label, next.taskSeed, next.projectIdentity), 500);
+        window.setTimeout(() => startTask(next.taskKey, next.label, next.taskSeed, next.projectIdentity, next.sourceId), 500);
       } else if (auto) {
         autoAt = performance.now() + random(900, 2100);
       }
@@ -762,6 +858,14 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       if (labelNameRef.current) labelNameRef.current.textContent = system.displayName;
     };
 
+    const showInfrastructureLabel = (item: { x: number; y: number; color: string; type: string; label: string }) => {
+      const label = labelRef.current;
+      if (!label) return;
+      label.style.left = `${item.x}px`; label.style.top = `${item.y - 32}px`; label.style.setProperty("--sat-color", item.color); label.classList.add("visible");
+      if (labelTypeRef.current) labelTypeRef.current.textContent = item.type;
+      if (labelNameRef.current) labelNameRef.current.textContent = item.label;
+    };
+
     const drawActiveSatellite = (time: number, planetId: string) => {
       if (!activeSatellite || activeSatellite.planetId !== planetId) return null;
       const point = satellitePosition(activeSatellite, time);
@@ -805,6 +909,8 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     };
 
     const updateHoverLabel = (activePoint: ScreenPoint | null) => {
+      const infrastructure = [...infrastructureScreens.values()].map((item) => ({ item, distance: Math.hypot(item.x - hoverX, item.y - hoverY) })).filter(({ distance }) => distance <= 12).sort((a, b) => a.distance - b.distance)[0]?.item;
+      if (infrastructure) { showInfrastructureLabel(infrastructure); return; }
       if (universe.camera.mode === "universe-overview") {
         const system = [...starScreens.entries()].map(([id, point]) => ({ system: universe.starSystems.find((candidate) => candidate.id === id), point, distance: Math.hypot(point.x - hoverX, point.y - hoverY) })).filter(({ system, distance }) => system && distance <= 16).sort((a, b) => a.distance - b.distance)[0];
         if (system?.system) showSystemLabel(system.system, system.point); else labelRef.current?.classList.remove("visible");
@@ -845,9 +951,10 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     const placeSystems = (now: number) => {
       planetScreens.clear();
       starScreens.clear();
+      stationScreens.clear();
       planetPositions.clear();
       orbitScreens.clear();
-      const systems = universe.starSystems.filter(({ lifecycleState }) => lifecycleState !== "latent");
+      const systems = universe.starSystems;
       const focusedSystem = universe.starSystems.find(({ id }) => id === universe.universe.focusedSystemId) ?? systems[0];
       const focusedPlanet = universe.planets.find(({ id }) => id === universe.universe.focusedPlanetId);
       for (const planet of universe.planets) {
@@ -890,6 +997,20 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         const system = universe.starSystems.find(({ id }) => id === planet.starSystemId);
         if (system && planetRadius > 0) orbitScreens.set(planet.id, Array.from({ length: 65 }, (_, index) => projectUniversePoint(planetPositionOnOrbit(planet, system, index / 64 * Math.PI * 2))));
       }
+      for (const system of systems) {
+        const systemPlanets = universe.planets.filter((planet) => planet.starSystemId === system.id);
+        if (!systemPlanets.length) continue;
+        const stations = stationsBySystem.get(system.id)?.slice(0, UNIVERSE_CONFIG.universeObjects.maximumRenderedStationsPerSystem) ?? [];
+        for (const [index, station] of stations.entries()) {
+          const planet = systemPlanets[index % systemPlanets.length];
+          const elapsed = Math.max(0, now - Date.parse(planet.createdAt)) / 1_000;
+          const angle = planet.orbit.phase + elapsed * planet.orbit.speed * planet.orbit.direction + GOLDEN_ANGLE * (Math.floor(index / systemPlanets.length) + 1);
+          const point = projectUniversePoint(planetPositionOnOrbit(planet, system, angle));
+          const visible = universe.camera.mode === "star-system-focus" && system.id === focusedSystem.id;
+          const stationRadius = visible ? clamp(scale * .17, 5, 18) : 0;
+          stationScreens.set(station.id, { ...point, radius: stationRadius, angle });
+        }
+      }
     };
 
     const curvePoint = (source: { x: number; y: number }, destination: { x: number; y: number }, amount: number, bend = -70) => {
@@ -898,14 +1019,18 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     };
 
     const drawStarSystems = (time: number) => {
-      const visibleSystems = universe.starSystems.filter(({ lifecycleState }) => lifecycleState !== "latent");
+      infrastructureScreens.clear();
+      const visibleSystems = universe.starSystems;
       const selectedId = universe.universe.selectedSystemId ?? universe.universe.focusedSystemId;
       const labeledSystems = new Set([...visibleSystems].sort((a, b) => Number(b.id === selectedId) - Number(a.id === selectedId) || Number(a.lifecycleState === "dormant") - Number(b.lifecycleState === "dormant") || Date.parse(b.lastActiveAt) - Date.parse(a.lastActiveAt)).slice(0, UNIVERSE_CONFIG.starSystems.maximumVisibleSystemLabels).map(({ id }) => id));
+      const drawnLabels: Array<{ x: number; y: number }> = [];
       for (const system of visibleSystems) {
         const screen = starScreens.get(system.id);
         if (!screen) continue;
         const forming = universe.activeStarFormation?.systemId === system.id ? universe.activeStarFormation.progress : 1;
         const dormant = system.lifecycleState === "dormant";
+        const nebula = system.lifecycleState === "nebula";
+        const blackHole = system.lifecycleState === "black-hole";
         const selected = system.id === selectedId;
         const visiblePlanets = universe.planets.filter((planet) => planet.starSystemId === system.id && (universe.camera.mode !== "universe-overview" || selected));
         ctx.save();
@@ -920,14 +1045,30 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         ctx.strokeStyle = rgba(system.color, selected ? .16 : .07); ctx.lineWidth = .7; ctx.stroke();
         const pulse = 1 + Math.sin(time * .002 + system.position.x) * .07;
         const coreRadius = Math.max(1.2, screen.radius * Math.max(.18, forming) * pulse);
-        const halo = ctx.createRadialGradient(screen.x, screen.y, 0, screen.x, screen.y, coreRadius * (selected ? 4.2 : 3.2));
-        halo.addColorStop(0, rgba(system.color, dormant ? .42 : .88)); halo.addColorStop(.24, rgba(system.color, dormant ? .18 : .38)); halo.addColorStop(1, rgba(system.color, 0));
-        ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(screen.x, screen.y, coreRadius * (selected ? 4.2 : 3.2), 0, Math.PI * 2); ctx.fill();
-        drawCachedLight(screen.x, screen.y, coreRadius, system.color, dormant ? 4 : selected ? 18 : 10, forming < .25 ? system.color : "#fff4d4", forming < .25 ? forming * 3 : 1);
-        if (forming > .42 && labeledSystems.has(system.id) && screen.x > 40 && screen.x < width - 40 && screen.y > 20 && screen.y < height - 20) {
+        if (nebula) {
+          drawCachedNebula(screen.x, screen.y, coreRadius, system.color, time * .00003);
+        } else if (blackHole) {
+          drawCachedBlackHole(screen.x, screen.y, coreRadius, -.28 + time * .000015);
+        } else {
+          const halo = ctx.createRadialGradient(screen.x, screen.y, 0, screen.x, screen.y, coreRadius * (selected ? 4.2 : 3.2));
+          halo.addColorStop(0, rgba(system.color, dormant ? .42 : .88)); halo.addColorStop(.24, rgba(system.color, dormant ? .18 : .38)); halo.addColorStop(1, rgba(system.color, 0));
+          ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(screen.x, screen.y, coreRadius * (selected ? 4.2 : 3.2), 0, Math.PI * 2); ctx.fill();
+          drawCachedLight(screen.x, screen.y, coreRadius, system.color, dormant ? 4 : selected ? 18 : 10, forming < .25 ? system.color : "#fff4d4", forming < .25 ? forming * 3 : 1);
+        }
+        if (forming > .42 && labeledSystems.has(system.id) && screen.x > 40 && screen.x < width - 40 && screen.y > 20 && screen.y < height - 20 && (selected || drawnLabels.every((label) => Math.hypot(label.x - screen.x, label.y - screen.y) > 74))) {
           ctx.font = `${selected ? 10 : 8}px JetBrains Mono`; ctx.textAlign = "center"; ctx.fillStyle = selected ? "rgba(255,239,205,.92)" : "rgba(205,195,168,.68)"; ctx.fillText(system.displayName.toUpperCase(), screen.x, screen.y - coreRadius - 13);
+          drawnLabels.push(screen);
         }
         ctx.restore();
+        const asteroids = asteroidBeltsBySystem.get(system.id)?.length ?? 0;
+        if (asteroids) {
+          const particles = Math.min(UNIVERSE_CONFIG.universeObjects.maximumRenderedAsteroidsPerSystem, Math.max(8, Math.ceil(Math.sqrt(asteroids) * 5)));
+          drawCachedAsteroidBelt(screen.x, screen.y, coreRadius, particles, selected ? .55 : .25, .22 + time * .00002);
+        }
+        const stations = stationsBySystem.get(system.id)?.slice(0, UNIVERSE_CONFIG.universeObjects.maximumRenderedStationsPerSystem) ?? [];
+        const systemPulsars = pulsarsBySystem.get(system.id)?.slice(0, UNIVERSE_CONFIG.universeObjects.maximumRenderedPulsarsPerSystem) ?? [];
+        for (const station of stations) { const stationScreen = stationScreens.get(station.id); if (!stationScreen || stationScreen.radius <= 0) continue; const color = station.status === "offline" ? "#68747b" : station.status === "degraded" ? "#ffac5c" : "#52f6ad"; infrastructureScreens.set(station.id, { x: stationScreen.x, y: stationScreen.y, color, type: `${station.kind.toUpperCase()} station · ${station.status}`, label: station.displayName }); drawCachedStation(stationScreen.x, stationScreen.y, stationScreen.radius, color, stationScreen.angle + Math.PI * .5); }
+        for (const [index, pulsar] of systemPulsars.entries()) { const angle = index * GOLDEN_ANGLE + 2.2; const x = screen.x + Math.cos(angle) * coreRadius * 7.5; const y = screen.y + Math.sin(angle) * coreRadius * 2.7; const dayCount = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].filter((day) => pulsar.schedule.toLowerCase().includes(day)).length; const cadence = .0015 + (dayCount || 7) / 7 * .0015; const color = pulsar.status === "failed" ? "#ff6f87" : "#37d7ff"; const flashing = pulsar.status === "paused" ? .25 : .45 + Math.sin(time * (pulsar.status === "running" ? .008 : cadence) + index) * .35; infrastructureScreens.set(pulsar.id, { x, y, color, type: `Automation pulsar · ${pulsar.status}`, label: pulsar.displayName }); drawCachedLight(x, y, 1.2 + flashing, color, 5); }
       }
     };
 
@@ -986,7 +1127,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         drawCachedLight(point.x, point.y, 1.8, "#52f6ad", 9, "#d7f8ff");
       }
 
-      for (const system of universe.starSystems.filter(({ lifecycleState }) => lifecycleState !== "latent")) {
+      for (const system of universe.starSystems) {
         const screen = starScreens.get(system.id);
         if (screen && (screen.x + screen.radius < 0 || screen.x - screen.radius > width || screen.y + screen.radius < 0 || screen.y - screen.radius > height)) {
           const edgeX = clamp(screen.x, 22, width - 22);
@@ -1023,6 +1164,14 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       frame = requestAnimationFrame(draw);
       if (!isVisible || document.hidden) return;
       const signal = signalRef.current;
+      const observationSignature = signal.observation?.revision ?? JSON.stringify([signal.observedProjects, signal.pulsars]);
+      if (observationSignature !== lastObservationSignature) {
+        const observedAt = new Date().toISOString();
+        reconcileUniverseSnapshot(universe, signal.observation ?? { source: "living-balancer-telemetry", revision: observationSignature, observedAt, projects: signal.observedProjects.map((identity) => ({ identity })), pulsars: signal.pulsars.map((item) => ({ ...item, project: null })) });
+        refreshInfrastructureIndex();
+        lastObservationSignature = observationSignature;
+        persistUniverse(); syncUniverse();
+      }
       const chats = signal.chatActivities.length ? signal.chatActivities : signal.eventId ? [{ sessionId: "current", eventId: signal.eventId, activityKind: signal.activityKind, eventLabel: signal.eventLabel, projectIdentity: signal.projectIdentity }] : [];
       const visibleChatIds = new Set(chats.filter(({ activityKind: kind }) => kind !== "idle").map(({ sessionId }) => sessionId));
       for (const sessionId of activeChats.keys()) if (!visibleChatIds.has(sessionId)) activeChats.delete(sessionId);
@@ -1032,7 +1181,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         if (lastEventIds.get(chat.sessionId) !== chat.eventId) {
           const system = resolveProjectSystem(universe, chat.projectIdentity);
           activeChats.set(chat.sessionId, { ...chat, systemId: system.id });
-          startTask(TASK_FOR_ACTIVITY[chat.activityKind], chat.eventLabel, `${chat.sessionId}:${chat.eventId}`, chat.projectIdentity);
+          startTask(TASK_FOR_ACTIVITY[chat.activityKind], chat.eventLabel, `${chat.sessionId}:${chat.eventId}`, chat.projectIdentity, chat.sessionId);
           lastEventIds.set(chat.sessionId, chat.eventId);
         } else if (existing) activeChats.set(chat.sessionId, { ...existing, ...chat });
       }
@@ -1162,20 +1311,21 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       cameraPanX = 0; cameraPanY = 0; cameraZoom = 1; persistUniverse(); syncUniverse();
     };
     const overview = () => { universe.camera.mode = "universe-overview"; cameraPanX = 0; cameraPanY = 0; cameraZoom = 1; persistUniverse(); syncUniverse(); };
-    const resetCamera = () => { cameraPanX = 0; cameraPanY = 0; cameraZoom = 1; cameraRotation = 0; cameraPitch = 0; universe.camera.mode = universe.starSystems.filter(({ lifecycleState }) => lifecycleState !== "latent").length > 1 ? "universe-overview" : "star-system-focus"; persistUniverse(); syncUniverse(); };
+    const resetCamera = () => { cameraPanX = 0; cameraPanY = 0; cameraZoom = 1; cameraRotation = 0; cameraPitch = 0; universe.camera.mode = universe.starSystems.length > 1 ? "universe-overview" : "star-system-focus"; persistUniverse(); syncUniverse(); };
     const doubleClick = () => focusSelected();
     const keydown = (event: KeyboardEvent) => {
       let handled = true;
       if (event.key === "Escape") {
         if (universe.camera.mode === "planet-focus" || universe.camera.mode.endsWith("cinematic")) { universe.camera.mode = "star-system-focus"; universe.universe.focusedPlanetId = null; universe.camera.focusedPlanetId = null; cameraPanX = 0; cameraPanY = 0; cameraZoom = 1; persistUniverse(); syncUniverse(); }
         else if (universe.camera.mode === "star-system-focus" || universe.camera.mode === "communication-focus" || universe.camera.mode === "task-focus") overview();
+        else if (universe.camera.mode === "universe-overview" || universe.camera.mode === "free-navigation") window.dispatchEvent(new CustomEvent("living-universe-exit-fullscreen"));
         else handled = false;
       } else if (event.key === "Home") resetCamera(); else if (event.key === "+" || event.key === "=") cameraZoom = clamp(cameraZoom * 1.15, .35, 4); else if (event.key === "-") cameraZoom = clamp(cameraZoom / 1.15, .35, 4); else if (event.key === "ArrowLeft") cameraPanX += 24; else if (event.key === "ArrowRight") cameraPanX -= 24; else if (event.key === "ArrowUp") cameraPanY += 24; else if (event.key === "ArrowDown") cameraPanY -= 24; else handled = false;
       if (handled) { event.preventDefault(); event.stopPropagation(); }
     };
     const focusSystem = (event: Event) => {
       const id = (event as CustomEvent<string>).detail;
-      if (!universe.starSystems.some((system) => system.id === id && system.lifecycleState !== "latent")) return;
+      if (!universe.starSystems.some((system) => system.id === id)) return;
       universe.universe.selectedSystemId = id; universe.universe.selectedPlanetId = null; universe.universe.focusedSystemId = id; universe.universe.focusedPlanetId = null; universe.camera.focusedSystemId = id; universe.camera.focusedPlanetId = null; universe.camera.mode = "star-system-focus"; cameraPanX = 0; cameraPanY = 0; cameraZoom = 1; persistUniverse(); syncUniverse();
     };
     const focusPlanet = (event: Event) => {

@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { ChevronDown, ChevronUp, Maximize2, Minimize2 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 
-import { CodexGlobe, type ChatActivitySignal, type SatelliteSummary } from "./codex-globe";
-import { UNIVERSE_CONFIG, type UniverseSummary } from "../universe";
+import { CodexGlobe, type ChatActivitySignal, type PulsarObservation, type SatelliteSummary } from "./codex-globe";
+import { UNIVERSE_CONFIG, type ProjectIdentityInput, type UniverseObservationSnapshot, type UniverseSummary } from "../universe";
 import type { DashboardOverview, RequestLog } from "../schemas";
+import { getCodexObserverSnapshot } from "../codex-observer";
 import { useLocalActivity, useLocalSessions, useLocalUsage } from "@/features/local-usage/hooks/use-local-usage";
 import "./living-dashboard.css";
 
@@ -20,6 +22,7 @@ export function LivingDashboard({ requests }: { overview: DashboardOverview; req
   const localUsage = useLocalUsage("today").data;
   const activity = useLocalActivity().data;
   const { data: localSessions, refetch: refetchLocalSessions } = useLocalSessions("codex", "today");
+  const observer = useQuery({ queryKey: ["codex-observer", "snapshot"], queryFn: getCodexObserverSnapshot, refetchInterval: 3_000, retry: false }).data;
   const activitySessions = useMemo(() => activity?.sessions.length ? activity.sessions : activity?.session_id ? [{ session_id: activity.session_id, state: activity.state, events: activity.events }] : [], [activity]);
   const sessionsById = useMemo(() => new Map((localSessions?.sessions ?? []).map((item) => [item.session_id, item])), [localSessions?.sessions]);
   const latest = requests[0];
@@ -34,6 +37,28 @@ export function LivingDashboard({ requests }: { overview: DashboardOverview; req
     const event = chat.events.at(-1);
     return { sessionId: chat.session_id, eventId: event?.id, activityKind: chat.state, eventLabel: event?.label, projectIdentity: localSession?.project_id ? { repositoryId: localSession.project_id, displayName: localSession.project } : null };
   });
+  const observedProjects = useMemo(() => [...new Map((localSessions?.sessions ?? []).filter(({ project_id }) => project_id).map((item) => [item.project_id!, { repositoryId: item.project_id!, displayName: item.project }])).values()], [localSessions?.sessions]);
+  const observation = useMemo<UniverseObservationSnapshot | null>(() => {
+    if (!observer?.connected) return null;
+    const normalize = (path: string) => path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+    const projectsByPath = new Map(observer.projects.map((project) => [normalize(project.path), project]));
+    const identityFor = (workspaceRoot: string, sessionId?: string): ProjectIdentityInput | null => {
+      const project = projectsByPath.get(normalize(workspaceRoot));
+      const localSession = sessionId ? sessionsById.get(sessionId) : null;
+      if (!project && !localSession?.project_id) return null;
+      return { repositoryId: localSession?.project_id, workspaceId: project?.projectId, workspaceRoot: project?.path ?? workspaceRoot, displayName: project?.label ?? localSession?.project };
+    };
+    return {
+      source: "codex-app-server",
+      revision: observer.revision,
+      observedAt: observer.observedAt,
+      projects: observer.projects.map((project) => ({ identity: { workspaceId: project.projectId, workspaceRoot: project.path, displayName: project.label }, removed: project.removed, removalAuthoritative: project.removalAuthoritative })),
+      chats: observer.threads.map((thread) => ({ sourceId: thread.id, project: identityFor(thread.cwd, thread.id), state: thread.state, title: thread.title, lastActiveAt: thread.updatedAt, changedAt: thread.updatedAt })),
+      stations: observer.stations.map((station) => ({ ...station, project: null })),
+      pulsars: observer.pulsars.map((pulsar) => ({ automationId: pulsar.automationId, project: pulsar.workspaceRoot ? identityFor(pulsar.workspaceRoot) : null, displayName: pulsar.displayName, schedule: pulsar.schedule, status: pulsar.status })),
+    };
+  }, [observer, sessionsById]);
+  const pulsars: PulsarObservation[] = observer?.pulsars ?? [];
   const activityEvents = activitySessions.flatMap((chat) => chat.events.map((event) => ({ ...event, sessionId: chat.session_id, sessionState: chat.state, project: sessionsById.get(chat.session_id)?.project }))).sort((a, b) => String(b.timestamp ?? "").localeCompare(String(a.timestamp ?? "")));
   const largestSystem = universe?.systems.reduce((largest, system) => system.satelliteCount > largest.satelliteCount ? system : largest, universe.systems[0]);
   const mostUsedModel = usage?.combined_models.reduce((mostUsed, model) => model.tokens > mostUsed.tokens ? model : mostUsed, usage.combined_models[0]);
@@ -45,8 +70,10 @@ export function LivingDashboard({ requests }: { overview: DashboardOverview; req
   useEffect(() => {
     if (!globeExpanded) return;
     const close = (event: KeyboardEvent) => { if (event.key === "Escape" && !event.defaultPrevented && !(event.target instanceof Element && event.target.closest(".living-globe-runtime"))) setGlobeExpanded(false); };
+    const exitFullscreen = () => setGlobeExpanded(false);
     document.addEventListener("keydown", close);
-    return () => document.removeEventListener("keydown", close);
+    window.addEventListener("living-universe-exit-fullscreen", exitFullscreen);
+    return () => { document.removeEventListener("keydown", close); window.removeEventListener("living-universe-exit-fullscreen", exitFullscreen); };
   }, [globeExpanded]);
 
   const signals = [
@@ -78,7 +105,7 @@ export function LivingDashboard({ requests }: { overview: DashboardOverview; req
       <div className={`living-panel living-core${globeExpanded ? " is-expanded" : ""}`}>
         <div className="living-panel-title">Living Codex <div className="living-panel-actions"><span>{latest ? "request telemetry" : "standing by"}</span><button type="button" aria-label={globeExpanded ? "Restore globe panel" : "Expand globe panel"} aria-pressed={globeExpanded} onClick={() => setGlobeExpanded((expanded) => !expanded)}>{globeExpanded ? <Minimize2 /> : <Maximize2 />}</button></div></div>
         <div className="living-globe-scene">
-          <CodexGlobe activity={recentTokens} eventId={!activity?.session_id || activeSession ? latestEvent?.id : undefined} activityKind={latestEvent?.kind} eventLabel={latestEvent?.label} projectIdentity={session?.project_id ? { repositoryId: session.project_id, displayName: session.project } : null} chatActivities={chatActivities} model={signals[0][1]} context={signals[2][1]} onSatellitesChange={setSatellites} onUniverseChange={setUniverse} />
+          <CodexGlobe activity={recentTokens} eventId={!activity?.session_id || activeSession ? latestEvent?.id : undefined} activityKind={latestEvent?.kind} eventLabel={latestEvent?.label} projectIdentity={session?.project_id ? { repositoryId: session.project_id, displayName: session.project } : null} observedProjects={observedProjects} observation={observation} chatActivities={chatActivities} pulsars={pulsars} model={signals[0][1]} context={signals[2][1]} onSatellitesChange={setSatellites} onUniverseChange={setUniverse} />
         </div>
       </div>
 
@@ -89,6 +116,8 @@ export function LivingDashboard({ requests }: { overview: DashboardOverview; req
             <div style={{ "--stat-color": "#ffac5c" } as CSSProperties}><strong>Stars</strong><span>{value(universe?.systemCount)}</span></div>
             <div style={{ "--stat-color": "#b080ff" } as CSSProperties}><strong>Planets</strong><span>{value(universe?.planetCount)}</span></div>
             <div style={{ "--stat-color": "#52f6ad" } as CSSProperties}><strong>Satellites</strong><span>{value(universe?.satelliteCount)}</span></div>
+            <div style={{ "--stat-color": "#9ca6ad" } as CSSProperties}><strong>Archived chats</strong><span>{value(universe?.asteroidCount)}</span></div>
+            <div style={{ "--stat-color": "#37d7ff" } as CSSProperties}><strong>Infrastructure</strong><span>{value((universe?.stationCount ?? 0) + (universe?.pulsarCount ?? 0))}</span></div>
             <div style={{ "--stat-color": "#37d7ff" } as CSSProperties}><strong>Largest system</strong><span>{largestSystem ? `${largestSystem.displayName} · ${largestSystem.satelliteCount}` : "—"}</span></div>
             <div style={{ "--stat-color": "#ff6f87" } as CSSProperties}><strong>Most used model</strong><span>{mostUsedModel?.name || latest?.model || "—"}</span></div>
           </div>
@@ -109,10 +138,12 @@ export function LivingDashboard({ requests }: { overview: DashboardOverview; req
         {universe.selectedSystem ? <details className="living-panel living-focus-card" open>
           <summary><strong>{universe.selectedSystem.displayName}</strong><span>{universe.selectedSystem.satelliteCount} satellites</span></summary>
           <div className="living-focus-body">
-            {universe.systems.length > 1 ? <label>Project system<select aria-label="Project systems" value={universe.selectedSystem.id} onChange={(event) => focusSystem(event.target.value)}>{universe.systems.map((system) => <option key={system.id} value={system.id}>{system.displayName}{system.lifecycleState === "dormant" ? " · dormant" : ""}</option>)}</select></label> : null}
-            <label>Planet<select aria-label={`Planets in ${universe.selectedSystem.displayName}`} value={universe.selectedPlanet?.starSystemId === universe.selectedSystem.id ? universe.selectedPlanet.id : ""} onChange={(event) => focusPlanet(event.target.value)}><option value="" disabled>Select a planet</option>{universe.selectedSystemPlanets.map((planet) => <option key={planet.id} value={planet.id}>{planet.name} · {planet.lifecycleState}</option>)}</select></label>
+            {universe.systems.length > 1 ? <label>Project system<select aria-label="Project systems" value={universe.selectedSystem.id} onChange={(event) => focusSystem(event.target.value)}>{universe.systems.map((system) => <option key={system.id} value={system.id}>{system.displayName}{system.lifecycleState !== "stable" ? ` · ${system.lifecycleState}` : ""}</option>)}</select></label> : null}
+            {universe.selectedSystemPlanets.length ? <label>Planet<select aria-label={`Planets in ${universe.selectedSystem.displayName}`} value={universe.selectedPlanet?.starSystemId === universe.selectedSystem.id ? universe.selectedPlanet.id : ""} onChange={(event) => focusPlanet(event.target.value)}><option value="" disabled>Select a planet</option>{universe.selectedSystemPlanets.map((planet) => <option key={planet.id} value={planet.id}>{planet.name} · {planet.lifecycleState}</option>)}</select></label> : <span>No planets until qualifying Codex activity.</span>}
             <span>{universe.selectedSystem.lifecycleState} · {universe.selectedSystem.planetIds.length} planets · {universe.selectedSystem.totalTasksProcessed} tasks</span>
+            {universe.selectedSystem.lifecycleState === "black-hole" ? <span>Removed {universe.selectedSystem.removedAt ? new Date(universe.selectedSystem.removedAt).toLocaleString() : "by Codex"} · history retained for recovery</span> : <span>Observed via {universe.selectedSystem.observationSource} · {new Date(universe.selectedSystem.lastObservedAt).toLocaleString()}</span>}
             <span>Maturity {Math.round(universe.selectedSystem.maturity * 100)}% · {universe.selectedSystem.totalCrossSystemSignals} cross-system signals</span>
+            <span>{universe.selectedSystem.asteroidCount} asteroids · {universe.selectedSystem.stationCount} stations · {universe.selectedSystem.pulsarCount} pulsars</span>
             <span>{universe.selectedSystem.dominantActivityTypes.length ? `Dominant: ${universe.selectedSystem.dominantActivityTypes.join(", ")}` : "No dominant activity yet"}</span>
             <button type="button" onClick={() => focusSystem(universe.selectedSystem!.id)}>Focus system</button>
           </div>
