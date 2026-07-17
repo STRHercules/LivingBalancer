@@ -8,6 +8,7 @@ import {
   createUniverse,
   evaluateExpansion,
   planetPositionAt,
+  planetPositionOnOrbit,
   resolveProjectSystem,
   routeCrossSystemSignal,
   routeSignal,
@@ -221,6 +222,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     const planetScreens = new Map<string, { x: number; y: number; radius: number; z: number }>();
     const starScreens = new Map<string, { x: number; y: number; radius: number; z: number }>();
     const planetPositions = new Map<string, Point3D>();
+    const orbitScreens = new Map<string, Array<{ x: number; y: number }>>();
 
     const syncUniverse = () => {
       onSatellitesChange?.(universe.satellites.map((satellite) => ({ id: satellite.id, label: satellite.naming.displayName, type: TASKS[satellite.taskKey].label, color: satellite.color })));
@@ -710,6 +712,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       planetScreens.clear();
       starScreens.clear();
       planetPositions.clear();
+      orbitScreens.clear();
       const systems = universe.starSystems.filter(({ lifecycleState }) => lifecycleState !== "latent");
       const focusedSystem = universe.starSystems.find(({ id }) => id === universe.universe.focusedSystemId) ?? systems[0];
       const focusedPlanet = universe.planets.find(({ id }) => id === universe.universe.focusedPlanetId);
@@ -750,6 +753,8 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         const expansion = universe.activeExpansion;
         if (expansion?.childPlanetId === planet.id) planetRadius *= expansion.phase === "launching" ? 0 : expansion.phase === "forming" ? Math.max(.08, expansion.progress) : 1;
         planetScreens.set(planet.id, { ...point, radius: planetRadius });
+        const system = universe.starSystems.find(({ id }) => id === planet.starSystemId);
+        if (system && planetRadius > 0) orbitScreens.set(planet.id, Array.from({ length: 65 }, (_, index) => projectUniversePoint(planetPositionOnOrbit(planet, system, index / 64 * Math.PI * 2))));
       }
     };
 
@@ -773,8 +778,9 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
         for (const planet of visiblePlanets) {
           const planetScreen = planetScreens.get(planet.id);
           if (!planetScreen || planetScreen.radius <= 0) continue;
-          const orbitRadius = Math.hypot(planetScreen.x - screen.x, planetScreen.y - screen.y);
-          ctx.beginPath(); ctx.ellipse(screen.x, screen.y, orbitRadius, Math.max(3, orbitRadius * .34), -.12, 0, Math.PI * 2); ctx.strokeStyle = rgba(system.color, selected ? .16 : .07); ctx.lineWidth = .7; ctx.stroke();
+          const orbit = orbitScreens.get(planet.id);
+          if (!orbit?.length) continue;
+          ctx.beginPath(); ctx.moveTo(orbit[0].x, orbit[0].y); for (const point of orbit.slice(1)) ctx.lineTo(point.x, point.y); ctx.strokeStyle = rgba(system.color, selected ? .16 : .07); ctx.lineWidth = .7; ctx.stroke();
         }
         const pulse = 1 + Math.sin(time * .002 + system.position.x) * .07;
         const coreRadius = Math.max(1.2, screen.radius * Math.max(.18, forming) * pulse);

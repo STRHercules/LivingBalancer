@@ -11,6 +11,7 @@ import {
   evaluateExpansion,
   normalizeProjectIdentity,
   planetPositionAt,
+  planetPositionOnOrbit,
   resolveProjectSystem,
   restoreUniverse,
   routeCrossSystemSignal,
@@ -126,7 +127,12 @@ describe("living project universe", () => {
     const first = state.planets.find(({ starSystemId }) => starSystemId === system.id)!;
     const position = planetPositionAt(first, system, 50_000);
     expect(planetPositionAt(first, system, 50_000)).toEqual(position);
-    expect(Math.hypot(position.x - system.position.x, position.z - system.position.z)).toBeCloseTo(first.orbit.radius, 8);
+    expect(Math.hypot(position.x - system.position.x, position.y - system.position.y, position.z - system.position.z)).toBeCloseTo(first.orbit.radius, 8);
+    const ringStart = planetPositionOnOrbit(first, system, 0);
+    const ringEnd = planetPositionOnOrbit(first, system, Math.PI * 2);
+    expect(ringEnd.x).toBeCloseTo(ringStart.x, 8);
+    expect(ringEnd.y).toBeCloseTo(ringStart.y, 8);
+    expect(ringEnd.z).toBeCloseTo(ringStart.z, 8);
     const restored = restoreUniverse(structuredClone(state), 50_000)!;
     expect(planetPositionAt(restored.planets.find(({ id }) => id === first.id)!, restored.starSystems.find(({ id }) => id === system.id)!, 50_000)).toEqual(position);
 

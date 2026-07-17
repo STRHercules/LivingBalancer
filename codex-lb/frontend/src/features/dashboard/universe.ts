@@ -289,14 +289,19 @@ function makePlanet(index: number, parent: Planet | null, system: StarSystem, no
   };
 }
 
-export function planetPositionAt(planet: Planet, system: StarSystem, now = Date.now()): Point3D {
-  const elapsed = Math.max(0, now - Date.parse(planet.createdAt)) / 1_000;
-  const angle = planet.orbit.phase + elapsed * planet.orbit.speed * planet.orbit.direction;
+export function planetPositionOnOrbit(planet: Planet, system: StarSystem, angle: number): Point3D {
+  const tilt = planet.orbit.inclination + Math.asin(Math.min(1, UNIVERSE_CONFIG.planetOrbits.verticalAmplitude / planet.orbit.radius));
+  const radial = Math.sin(angle) * planet.orbit.radius;
   return {
     x: system.position.x + Math.cos(angle) * planet.orbit.radius,
-    y: system.position.y + Math.sin(angle) * Math.sin(planet.orbit.inclination) * planet.orbit.radius + Math.sin(angle * .7) * UNIVERSE_CONFIG.planetOrbits.verticalAmplitude,
-    z: system.position.z + Math.sin(angle) * planet.orbit.radius,
+    y: system.position.y + radial * Math.sin(tilt),
+    z: system.position.z + radial * Math.cos(tilt),
   };
+}
+
+export function planetPositionAt(planet: Planet, system: StarSystem, now = Date.now()): Point3D {
+  const elapsed = Math.max(0, now - Date.parse(planet.createdAt)) / 1_000;
+  return planetPositionOnOrbit(planet, system, planet.orbit.phase + elapsed * planet.orbit.speed * planet.orbit.direction);
 }
 
 export function createUniverse(satellites: Omit<UniverseSatellite, "planetId" | "previousPlanetId" | "migrationState" | "orbitSlot" | "transferHistory">[] = [], now = Date.now()): UniverseState {
