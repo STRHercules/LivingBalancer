@@ -1,19 +1,32 @@
-import { useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { Download, RotateCcw, Upload } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import {
   exportUniverseBackup,
-  listUniverseBackups,
-  restoreLatestAutomaticBackup,
+  listUniverseRecoveryCandidates,
+  listUniverseServerBackups,
   restoreUniverseBackup,
+  restoreUniverseRecoveryCandidate,
+  restoreUniverseServerBackup,
+  saveUniverseToServerNow,
+  saveUniverseToStorage,
 } from "@/features/dashboard/universe-storage";
 
 export function LivingCodexDataSettings() {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [backups] = useState(() => listUniverseBackups(window.localStorage));
-  const latest = backups[0];
+  const [recoveryPoints] = useState(() => listUniverseRecoveryCandidates(window.localStorage));
+  const [recoveryId, setRecoveryId] = useState(() => recoveryPoints.reduce<(typeof recoveryPoints)[number] | undefined>((best, item) => !best || item.satelliteCount > best.satelliteCount ? item : best, undefined)?.id ?? "");
+  const selectedRecovery = recoveryPoints.find(({ id }) => id === recoveryId);
+  const [serverBackups, setServerBackups] = useState<Awaited<ReturnType<typeof listUniverseServerBackups>>>([]);
+  const [serverBackupId, setServerBackupId] = useState("");
+
+  useEffect(() => {
+    let mounted = true;
+    void listUniverseServerBackups().then((backups) => { if (mounted) { setServerBackups(backups); setServerBackupId(backups[0]?.id ?? ""); } }).catch(() => {});
+    return () => { mounted = false; };
+  }, []);
 
   const download = () => {
     try {
@@ -37,7 +50,8 @@ export function LivingCodexDataSettings() {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      restoreUniverseBackup(window.localStorage, JSON.parse(await file.text()));
+      const universe = restoreUniverseBackup(window.localStorage, JSON.parse(await file.text()));
+      await saveUniverseToServerNow(universe, true);
       restored();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Living Codex restore failed.");
@@ -46,10 +60,23 @@ export function LivingCodexDataSettings() {
     }
   };
 
-  const restoreAutomatic = () => {
-    if (!window.confirm("Restore the latest automatic Living Codex backup? Your current data will be archived first.")) return;
+  const restoreAutomatic = async () => {
+    if (!selectedRecovery || !window.confirm(`Restore this Living Codex recovery point (${selectedRecovery.systemCount} systems, ${selectedRecovery.planetCount} planets, ${selectedRecovery.satelliteCount} satellites)? Your current data will be archived first.`)) return;
     try {
-      restoreLatestAutomaticBackup(window.localStorage);
+      const universe = restoreUniverseRecoveryCandidate(window.localStorage, selectedRecovery.id);
+      await saveUniverseToServerNow(universe, true);
+      restored();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Living Codex restore failed.");
+    }
+  };
+
+  const restoreServerBackup = async () => {
+    const backup = serverBackups.find(({ id }) => id === serverBackupId);
+    if (!backup || !window.confirm(`Restore this durable Living Codex backup (${backup.systemCount} systems, ${backup.planetCount} planets, ${backup.satelliteCount} satellites)?`)) return;
+    try {
+      const universe = await restoreUniverseServerBackup(backup.id);
+      saveUniverseToStorage(window.localStorage, universe);
       restored();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Living Codex restore failed.");
@@ -67,9 +94,10 @@ export function LivingCodexDataSettings() {
           <Button type="button" variant="outline" onClick={download}><Download aria-hidden="true" />Download backup</Button>
           <Button type="button" variant="outline" onClick={() => inputRef.current?.click()}><Upload aria-hidden="true" />Restore from file</Button>
           <input ref={inputRef} className="hidden" type="file" accept="application/json,.json" onChange={(event) => void restoreFile(event)} />
-          <Button type="button" variant="outline" disabled={!latest} onClick={restoreAutomatic}><RotateCcw aria-hidden="true" />Restore automatic backup</Button>
+          <Button type="button" variant="outline" disabled={!selectedRecovery} onClick={() => void restoreAutomatic()}><RotateCcw aria-hidden="true" />Restore recovery point</Button>
         </div>
-        <p className="text-xs text-muted-foreground">{latest ? `Latest automatic backup: ${new Date(latest.createdAt).toLocaleString()} · ${latest.systemCount} systems · ${latest.planetCount} planets · ${latest.satelliteCount} satellites` : "Automatic backups begin when Living Codex data next changes."}</p>
+        {recoveryPoints.length ? <label className="grid gap-1 text-xs text-muted-foreground">Recovery point<select className="h-9 rounded-md border bg-background px-3 text-sm text-foreground" value={recoveryId} onChange={(event) => setRecoveryId(event.target.value)}>{recoveryPoints.map((point) => <option key={point.id} value={point.id}>{point.source === "automatic" ? new Date(point.createdAt).toLocaleString() : "Previous app version"} · {point.systemCount} systems · {point.planetCount} planets · {point.satelliteCount} satellites</option>)}</select></label> : <p className="text-xs text-muted-foreground">Automatic backups begin when Living Codex data next changes.</p>}
+        {serverBackups.length ? <div className="grid gap-2 border-t pt-3"><label className="grid gap-1 text-xs text-muted-foreground">Durable server backup<select className="h-9 rounded-md border bg-background px-3 text-sm text-foreground" value={serverBackupId} onChange={(event) => setServerBackupId(event.target.value)}>{serverBackups.map((backup) => <option key={backup.id} value={backup.id}>{new Date(backup.savedAt).toLocaleString()} · {backup.systemCount} systems · {backup.planetCount} planets · {backup.satelliteCount} satellites</option>)}</select></label><Button type="button" variant="outline" onClick={() => void restoreServerBackup()}><RotateCcw aria-hidden="true" />Restore durable backup</Button></div> : null}
       </div>
     </section>
   );

@@ -10,6 +10,7 @@ import {
   planetPositionAt,
   planetPositionOnOrbit,
   reconcileUniverseSnapshot,
+  restoreUniverse,
   resolveProjectSystem,
   routeCrossSystemSignal,
   routeSignal,
@@ -24,7 +25,7 @@ import {
   type UniverseObservationSnapshot,
   type UniverseSummary,
 } from "../universe";
-import { loadUniverseFromStorage, saveUniverseToStorage } from "../universe-storage";
+import { loadUniverseFromStorage, queueUniverseServerSave, saveUniverseToStorage } from "../universe-storage";
 
 type ActivityKind = "idle" | "thinking" | "workflow" | "tool" | "search";
 type Point3D = { x: number; y: number; z: number };
@@ -104,8 +105,10 @@ function loadLegacySatellites(): LegacySatellite[] | null {
   }
 }
 
-function loadUniverse(): UniverseState {
+function loadUniverse(serverUniverse?: UniverseState | null): UniverseState {
   try {
+    const durable = serverUniverse && restoreUniverse(serverUniverse);
+    if (durable) { evaluateExpansion(durable); return durable; }
     const restored = loadUniverseFromStorage(window.localStorage);
     if (restored) { evaluateExpansion(restored); return restored; }
   } catch {
@@ -127,7 +130,8 @@ function loadUniverse(): UniverseState {
   return universe;
 }
 
-export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", eventLabel, projectIdentity, observedProjects = [], observation = null, chatActivities = [], pulsars = [], model = "Waiting for traffic", context = "living-codex / globe", onSatellitesChange, onUniverseChange }: {
+export function CodexGlobe({ initialUniverse = null, activity = 0, eventId, activityKind = "idle", eventLabel, projectIdentity, observedProjects = [], observation = null, chatActivities = [], pulsars = [], model = "Waiting for traffic", context = "living-codex / globe", onSatellitesChange, onUniverseChange }: {
+  initialUniverse?: UniverseState | null;
   activity?: number;
   eventId?: string;
   activityKind?: ActivityKind;
@@ -161,6 +165,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
   const progressRef = useRef<HTMLDivElement>(null);
   const autoRef = useRef<HTMLButtonElement>(null);
   const signalRef = useRef({ activity, eventId, activityKind, eventLabel, projectIdentity, observedProjects, observation, chatActivities, pulsars });
+  const initialUniverseRef = useRef(initialUniverse);
 
   useEffect(() => {
     signalRef.current = { activity, eventId, activityKind, eventLabel, projectIdentity, observedProjects, observation, chatActivities, pulsars };
@@ -191,7 +196,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
     const queue: QueuedTask[] = [];
     const assignedNames = new Set<string>();
     const knowledgeByPlanet = new Map<string, Satellite[]>();
-    const universe = loadUniverse();
+    const universe = loadUniverse(initialUniverseRef.current);
     const storedSatellites = universe.satellites;
     let nextCreationIndex = Math.max(0, ...storedSatellites.map((satellite) => satellite.naming.index || 0)) + 1;
     let width = 1;
@@ -262,6 +267,7 @@ export function CodexGlobe({ activity = 0, eventId, activityKind = "idle", event
       try {
         universe.camera = { ...universe.camera, panX: cameraPanX, panY: cameraPanY, zoom: cameraZoom, rotation: cameraRotation, pitch: cameraPitch };
         saveUniverseToStorage(window.localStorage, universe);
+        queueUniverseServerSave(universe);
       } catch {
         // Storage may be unavailable in private or policy-restricted browser contexts.
       }

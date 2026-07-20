@@ -33,6 +33,16 @@ class QuotaSettings(BaseModel):
     poll_interval_minutes: int = 30
 
 
+class UniverseSaveRequest(BaseModel):
+    universe: dict[str, Any]
+    base_revision: str | None = None
+    force: bool = False
+
+
+class UniverseRestoreRequest(BaseModel):
+    backup_id: str
+
+
 def start_quota_polling() -> None:
     try:
         from tokdash.cli import _start_quota_poll_daemon
@@ -69,6 +79,37 @@ def _collector_error(exc: Exception) -> HTTPException:
     if isinstance(exc, (ValueError, FileNotFoundError)):
         return HTTPException(status_code=400, detail=str(exc))
     return HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/universe")
+async def living_codex_universe() -> dict[str, Any]:
+    from app.modules.local_usage.universe_store import load_universe
+
+    return await run_in_threadpool(load_universe)
+
+
+@router.put("/universe")
+async def save_living_codex_universe(request: UniverseSaveRequest) -> dict[str, Any]:
+    from app.modules.local_usage.universe_store import UniverseConflictError, save_universe
+
+    try:
+        return await run_in_threadpool(save_universe, request.universe, request.base_revision, request.force)
+    except UniverseConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/universe/restore")
+async def restore_living_codex_universe(request: UniverseRestoreRequest) -> dict[str, Any]:
+    from app.modules.local_usage.universe_store import restore_backup
+
+    try:
+        return await run_in_threadpool(restore_backup, request.backup_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _cached_usage(period: str, date_from: str | None, date_to: str | None, minute: int) -> dict[str, Any]:

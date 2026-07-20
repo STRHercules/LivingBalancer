@@ -3,7 +3,8 @@ import { ChevronDown, ChevronUp, Maximize2, Minimize2 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 
 import { CodexGlobe, type ChatActivitySignal, type PulsarObservation, type SatelliteSummary } from "./codex-globe";
-import { UNIVERSE_CONFIG, type ProjectIdentityInput, type UniverseObservationSnapshot, type UniverseSummary } from "../universe";
+import { UNIVERSE_CONFIG, type ProjectIdentityInput, type UniverseObservationSnapshot, type UniverseState, type UniverseSummary } from "../universe";
+import { loadUniverseFromServer } from "../universe-storage";
 import type { DashboardOverview, RequestLog } from "../schemas";
 import { getCodexObserverSnapshot } from "../codex-observer";
 import { useLocalActivity, useLocalSessions, useLocalUsage } from "@/features/local-usage/hooks/use-local-usage";
@@ -17,6 +18,7 @@ function value(value: number | null | undefined) {
 export function LivingDashboard({ requests }: { overview: DashboardOverview; requests: RequestLog[] }) {
   const [satellites, setSatellites] = useState<SatelliteSummary[]>([]);
   const [universe, setUniverse] = useState<UniverseSummary | null>(null);
+  const [initialUniverse, setInitialUniverse] = useState<UniverseState | null>();
   const [activityOpen, setActivityOpen] = useState(true);
   const [globeExpanded, setGlobeExpanded] = useState(false);
   const localUsage = useLocalUsage("today").data;
@@ -64,6 +66,12 @@ export function LivingDashboard({ requests }: { overview: DashboardOverview; req
   const mostUsedModel = usage?.combined_models.reduce((mostUsed, model) => model.tokens > mostUsed.tokens ? model : mostUsed, usage.combined_models[0]);
 
   useEffect(() => {
+    let mounted = true;
+    void loadUniverseFromServer().catch(() => null).then((stored) => { if (mounted) setInitialUniverse(stored); });
+    return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
     if (activitySessions.some(({ session_id }) => !sessionsById.has(session_id))) void refetchLocalSessions();
   }, [activitySessions, sessionsById, refetchLocalSessions]);
 
@@ -104,8 +112,8 @@ export function LivingDashboard({ requests }: { overview: DashboardOverview; req
 
       <div className={`living-panel living-core${globeExpanded ? " is-expanded" : ""}`}>
         <div className="living-panel-title">Living Codex <div className="living-panel-actions"><span>{latest ? "request telemetry" : "standing by"}</span><button type="button" aria-label={globeExpanded ? "Restore globe panel" : "Expand globe panel"} aria-pressed={globeExpanded} onClick={() => setGlobeExpanded((expanded) => !expanded)}>{globeExpanded ? <Minimize2 /> : <Maximize2 />}</button></div></div>
-        <div className="living-globe-scene">
-          <CodexGlobe activity={recentTokens} eventId={!activity?.session_id || activeSession ? latestEvent?.id : undefined} activityKind={latestEvent?.kind} eventLabel={latestEvent?.label} projectIdentity={session?.project_id ? { repositoryId: session.project_id, displayName: session.project } : null} observedProjects={observedProjects} observation={observation} chatActivities={chatActivities} pulsars={pulsars} model={signals[0][1]} context={signals[2][1]} onSatellitesChange={setSatellites} onUniverseChange={setUniverse} />
+        <div className="living-globe-scene" aria-busy={initialUniverse === undefined}>
+          {initialUniverse !== undefined ? <CodexGlobe initialUniverse={initialUniverse} activity={recentTokens} eventId={!activity?.session_id || activeSession ? latestEvent?.id : undefined} activityKind={latestEvent?.kind} eventLabel={latestEvent?.label} projectIdentity={session?.project_id ? { repositoryId: session.project_id, displayName: session.project } : null} observedProjects={observedProjects} observation={observation} chatActivities={chatActivities} pulsars={pulsars} model={signals[0][1]} context={signals[2][1]} onSatellitesChange={setSatellites} onUniverseChange={setUniverse} /> : null}
         </div>
       </div>
 
